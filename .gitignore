@@ -8,6 +8,7 @@ __pycache__/
 # Conda
 .env
 *.log
+logs/
 
 # Data & Model
 data/
@@ -17,6 +18,3 @@ datasets/
 
 # Build
 build/
-
-# Time
-2025/12/22:V1.0
