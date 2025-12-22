@@ -1,0 +1,22 @@
+# VS Code
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+
+# Conda
+.env
+*.log
+
+# Data & Model
+data/
+datasets/
+*.pth
+*.pt
+
+# Build
+build/
+
+# Time
+2025/12/22:V1.0

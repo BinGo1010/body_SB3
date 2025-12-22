@@ -1,0 +1,34 @@
+# /home/lvchen/body_SB3/configs/body_walk_evaluate_config.yaml
+
+env_id: myoLegWalk-v0
+model: /home/lvchen/body_SB3/logs/walkenv/models/best/best_model.zip
+vecnorm: ""                 # 可选：VecNormalize pkl 路径
+
+n_eval: 10
+seed: 4
+deterministic: true
+max_steps: 0                # 0 表示使用 env 默认 episode 长度
+
+forward: "-y"
+
+# 评估门槛（auto_mode 会自动切换）
+dist_thresh: 0.5            # <=0 表示禁用
+speed_thresh: 0.2           # <=0 表示禁用
+use_body_velocity_mean: true
+
+# 自动识别 in-place 并切换指标
+auto_mode: true
+in_place_dist_eps: 0.001
+in_place_speed_min: 0.1
+
+# 输出目录
+out_dir: /home/lvchen/body_SB3/logs/walkenv/eval/best_10_auto
+
+# 视频
+record_video: true
+video_dir: /home/lvchen/body_SB3/logs/walkenv/eval/videos 
+video_length: 2000
+
+# speed 分布 histogram（可选，文件会变大）
+save_speed_hist: false
+speed_hist_bins: 50

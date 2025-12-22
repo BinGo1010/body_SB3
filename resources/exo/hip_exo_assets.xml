@@ -1,0 +1,9 @@
+<mujocoinclude>
+    <asset>
+        <mesh name="base_link" file="base_link.STL" />
+        <mesh name="rr_Link" file="rr_Link.STL" />
+        <mesh name="ra_Link" file="ra_Link.STL" />
+        <mesh name="lr_Link" file="lr_Link.STL" />
+        <mesh name="la_Link" file="la_Link.STL" />
+    </asset>
+</mujocoinclude>

@@ -1,0 +1,129 @@
+################################################################################
+# myoLegWalk-v0 训练配置（使用 myosuite 内置环境）
+################################################################################
+
+env:
+  # --- 使用 myosuite 的注册ID ---
+  env_id: "myoLegWalk-v1" # myoLegWalk-v1(body+exo);myoLegWalk-v0(body only)
+  #环境数  
+  num_envs: 1
+  # 随机种子
+  seed: 4
+  # episode 相关设置
+  max_episode_steps: 500   # 每个回合最大步数（myosuite 环境一般默认是 500）
+  frame_skip: 5            # 每个动作持续多少个模拟步长（myosuite 环境一般默认是 5）
+
+train:
+  total_timesteps: 25000000         # 总训练步数25000000
+  # 续训开关设置
+  resume_from_best: true 
+  # 日志/模型保存
+  save_frequency: 65536         # CheckpointCallback：每隔多少步保存一次模型 问题！！
+  tensorboard_log: "logs/walkenv/tb"
+  log_dir: "logs/walkenv"       # eval日志和模型默认根目录
+  reward_decompose_window : 100   # 奖励分解滑动窗口大小，用于计算各项奖励的平均值并记录到 TensorBoard，若设为 0 则不记录各项奖励 --- 影响
+  reward_keys:               # 需要记录的奖励项名称列表，若设为 [] 则记录所有奖励项 - 'sparse'（=vel_reward：稀疏奖励学习）- 'solved'（行走速度标志）  - "dense"（奖惩综合）
+    # - "vel_reward"
+    # - "cyclic_hip"
+    # - "ref_rot"
+    # - "joint_angle_rew"
+    # - 'done'
+    # - "act_mag"
+
+# reward_weights:
+#     vel_reward: 5.0
+#     done: -100.0
+#     cyclic_hip: -20.0
+#     ref_rot: 15.0
+#     joint_angle_rew: 10.0
+#     alive: 0.01
+#     act_mag: -10.0
+#     centerline: 15.0
+    
+#WalkEnvV4   
+# reward_weights:
+#     vel_reward: 5
+#     done: -100.0
+#     cyclic_hip: -25.0 # 4个关节轨迹
+#     joint_angle_rew: 10.0 # 关节轨迹够多就不需要
+#     centerline: 15.0
+#     head_stability: 20.0 # 头部朝向
+
+#WalkEnvV5   
+# reward_weights:
+#     imit_pose: 200.0
+#     imit_vel: 40.0
+#     vel_reward: 50.0
+#     done: -100.0
+#     # centerline: 0.0
+#     # head_stability: 0 # 头部朝向
+#     # progress: 0
+
+#Kinesis WalkEnvV5
+reward_weights:
+    imit_pose: 0.4
+    imit_vel: 0.1
+    upright: 0.2
+    vel_reward: 0.2
+    act_mag: 0.1
+    done: -100.0
+
+# reward_weights:
+#   imit_pose: 6.5
+#   imit_vel:  1.0
+#   imit_ee:   1.5
+#   imit_com:  1.0
+
+#   vel_reward: 0.5
+#   centerline: 0.2
+#   head_stability: 0.5
+#   joint_angle_rew: 0.5
+#   act_mag: -0.2
+#   done: -100.0
+
+# default_weights
+# {
+#     "vel_reward": 5.0,
+#     "done": -100.0,
+#     "cyclic_hip": -10.0,
+#     "ref_rot": 10.0,
+#     "joint_angle_rew": 5.0,
+# }
+
+eval:
+  eval_freq: 50000              # EvalCallback：每隔多少训练步做一次评估/同时渲染视频
+  n_episodes: 5                 # 每次评估跑多少个回合episode
+  deterministic: true           # 评估时是否使用确定性策略
+  eval_render: False             # 评估时是否渲染画面（会慢很多）
+
+ppo:
+  learning_rate: 0.0003
+  batch_size: 256
+  n_steps: 3072               # 每次更新前收集多少步数据（总步数 = n_envs * n_steps）
+  n_epochs: 5
+  gamma: 0.99
+  gae_lambda: 0.95
+  ent_coef: 0.0
+  vf_coef: 0.5
+  use_sde: false
+  policy_hidden_sizes:  # 隐藏层大小 问题：作用?
+    pi: [256, 256]
+    vf: [256, 256]
+
+# --- 视频录制设置（训练过程中自动导出运动渲染） ---
+video:
+  video_enabled: true
+  out_dir: "logs/walkenv/videos"
+  rollout_length: 1000
+  fps: 30
+  format: "mp4"  # 可选: "mp4" 或 "gif"
+  render_size: [480, 480]       # 不要超过 XML 的 offwidth/offheight（myosuite 内置模型一般能支持 480x480）
+  render_camera: 0              # 有些 myosuite 环境忽略此项；保留不影响运行
+
+# --- W&B相关设置 ---
+wandb:
+  wandb_enabled: true
+  project: "myoLegWalk—test"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
+  name: "walkenv_12_20—0.8" # 本次实验名字，不写就用时间戳
+
+################################################################################
