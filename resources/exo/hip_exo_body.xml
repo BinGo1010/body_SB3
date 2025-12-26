@@ -23,7 +23,8 @@
                 <joint name="ra_joint" pos="0 0 0" axis="0 0 1" limited="true" range="-1.571 1.571" />
                 <geom type="mesh" rgba="1 1 1 1" mesh="ra_Link" />
                 <body name="ra_attach" pos="0.27 0.12 -0.02" quat="1 0 0 0">
-                    <!-- 可选：放个 site 当可视化标记 pos="0.27 0.12 -0.02"锚点-->
+                    <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+                    <!-- 可选：放个 site 当可视化标记 pos="0.27 0.12 -0.02center"锚点-->
                     <site name="ra_strap" pos="0 0 0" size="0.03" type="sphere" rgba="1 0 0 1" group="4"/>
                 </body>
             </body>
@@ -47,6 +48,7 @@
                 <geom type="mesh" rgba="1 1 1 1" mesh="la_Link" />
                 <!-- 可选：放个 site 当可视化标记0.2 -0.15 0.05 -->
                 <body name="la_attach" pos="0.27 -0.12 -0.02" quat="1 0 0 0">
+                    <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
                     <site name="la_strap" pos="0 0 0" size="0.03" type="sphere" rgba="0 0 1 1" group="4"/>
                 </body>
             </body>

@@ -4,7 +4,7 @@
 
 env:
   # --- 使用 myosuite 的注册ID ---
-  env_id: "myoLegWalk-v1" # myoLegWalk-v1(body+exo);myoLegWalk-v0(body only)
+  env_id: "myoLegWalk-v0" # myoLegWalk-v1(body+exo);myoLegWalk-v0(body only)
   #环境数  
   num_envs: 1
   # 随机种子

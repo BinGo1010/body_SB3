@@ -109,7 +109,7 @@ def main():
 
     # 默认路径（保持你原脚本习惯）
     default_coeff_csv = os.path.join(PROJECT_ROOT, "cpg", "fourier_coefficients_order6_132.csv")
-    default_xml = "/home/lvchen/miniconda3/envs/myosuite_raw/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
+    default_xml = "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
     default_out_csv = os.path.join(os.path.dirname(__file__), "reset_states_from_mujoco.csv")
 
     coeff_csv = args.coeff_csv or default_coeff_csv

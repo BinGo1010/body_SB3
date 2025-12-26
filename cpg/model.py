@@ -202,3 +202,143 @@ class HipTorqueCPG:
     
 
     
+# ============================
+# Angle-trajectory CPG (Fourier) + time-derivative
+# ============================
+
+class HipAngleCPG:
+    """与 HipTorqueCPG 相同的状态更新/相位耦合，但输出为髋关节**角度轨迹**(q_des, dq_des)。
+
+    输出：
+      q_des  : [q_L, q_R]  (rad)
+      dq_des : [dq_L, dq_R] (rad/s)
+
+    说明：
+    - 仍使用参数文件中的傅里叶基函数 base(phi)，并以 a0 为中心值得到零均值形状：
+        shape(phi) = base(phi) - a0
+    - 角度轨迹定义为：
+        q_des = offset + amp * shape(phi)
+      其中 amp、offset 的物理单位应按“角度尺度”配置（rad），不再是 Nm。
+    - dq_des 通过解析求导得到：
+        dbase/dphi = sum_k [ -k a_k sin(k phi) + k b_k cos(k phi) ]
+        dshape/dphi = dbase/dphi
+        dq/dt = amp * dshape/dphi * (dphi/dt)
+      这里 dphi/dt 取相位更新时的 phidot（rad/s）。
+    """
+
+    def __init__(self, params: PaperParams, dt: float = 0.02, phase0: float = 0.0, S_hip: int = 6):
+        self.p = params
+        self.dt = float(dt)
+        self.S_hip = int(S_hip)
+
+        # 相位
+        self.phi_L = float(phase0)
+        self.phi_R = float(phase0 + np.pi)
+
+        # 频率/尺度（单位由外部约定：omega 为 rad/s；amp、offset 为 rad）
+        self.omega = 6.0  # rad/s, 约 1Hz
+        self.amp = np.array([0.2, 0.2], dtype=float)      # rad
+        self.offset = np.array([0.0, 0.0], dtype=float)   # rad
+
+        # 二阶跟踪器状态（同 HipTorqueCPG）
+        self.omega_x = 0.0
+        self.omega_dx = 0.0
+        self.amp_x = np.zeros(2, dtype=float)
+        self.amp_dx = np.zeros(2, dtype=float)
+        self.offset_x = np.zeros(2, dtype=float)
+        self.offset_dx = np.zeros(2, dtype=float)
+
+        # 跟踪器参数（可按需调整）
+        self.omega_wn = 8.0
+        self.omega_zeta = 1.0
+        self.amp_wn = 8.0
+        self.amp_zeta = 1.0
+        self.offset_wn = 8.0
+        self.offset_zeta = 1.0
+
+        # 相位耦合（左右锁相）
+        self.k_couple = 10.0
+
+    def reset(self, phase0: float = 0.0):
+        self.phi_L = float(phase0)
+        self.phi_R = float(phase0 + np.pi)
+
+    def _track2(self, x, dx, x_des, wn, zeta):
+        # 二阶系统：ddx = wn^2 (x_des - x) - 2 zeta wn dx
+        ddx = (wn * wn) * (x_des - x) - 2.0 * zeta * wn * dx
+        dx = dx + ddx * self.dt
+        x = x + dx * self.dt
+        return x, dx
+
+    def hip_fourier(self, phi: float) -> float:
+        p = self.p
+        S = int(np.clip(self.S_hip, 1, len(p.hip_a)))
+        a0 = p.hip_a0
+        a = p.hip_a[:S]
+        b = p.hip_b[:S]
+        l = np.arange(1, S + 1, dtype=float)
+        return float(a0 + np.sum(a * np.cos(l * phi) + b * np.sin(l * phi)))
+
+    def hip_fourier_dphi(self, phi: float) -> float:
+        """dbase/dphi"""
+        p = self.p
+        S = int(np.clip(self.S_hip, 1, len(p.hip_a)))
+        a = p.hip_a[:S]
+        b = p.hip_b[:S]
+        l = np.arange(1, S + 1, dtype=float)
+        return float(np.sum((-l) * a * np.sin(l * phi) + (l) * b * np.cos(l * phi)))
+
+    def step(self, Omega_target, amp_target, offset_target):
+        # 1) 二阶跟踪：omega/amp/offset
+        self.omega, self.omega_dx = self._track2(
+            self.omega, self.omega_dx, float(Omega_target), self.omega_wn, self.omega_zeta
+        )
+
+        amp_target = np.asarray(amp_target, dtype=float).reshape(2)
+        offset_target = np.asarray(offset_target, dtype=float).reshape(2)
+
+        for i in range(2):
+            self.amp[i], self.amp_dx[i] = self._track2(
+                self.amp[i], self.amp_dx[i], float(amp_target[i]), self.amp_wn, self.amp_zeta
+            )
+            self.offset[i], self.offset_dx[i] = self._track2(
+                self.offset[i], self.offset_dx[i], float(offset_target[i]), self.offset_wn, self.offset_zeta
+            )
+
+        # 2) 相位耦合（锁相到 pi）
+        delta = (self.phi_R - self.phi_L) - np.pi
+        delta = (delta + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
+        couple_term = self.k_couple * delta
+
+        # 3) 相位积分（phidot 为 rad/s）
+        phidot_L = self.omega + couple_term
+        phidot_R = self.omega - couple_term
+        self.phi_L = (self.phi_L + phidot_L * self.dt) % (2 * np.pi)
+        self.phi_R = (self.phi_R + phidot_R * self.dt) % (2 * np.pi)
+
+        # 4) 角度轨迹 q_des / dq_des
+        center = self.p.hip_a0
+
+        base_L = self.hip_fourier(self.phi_L)
+        base_R = self.hip_fourier(self.phi_R)
+        dbase_L = self.hip_fourier_dphi(self.phi_L)
+        dbase_R = self.hip_fourier_dphi(self.phi_R)
+
+        shape_L = base_L - center
+        shape_R = base_R - center
+
+        q_L = self.offset[0] + self.amp[0] * shape_L
+        q_R = self.offset[1] + self.amp[1] * shape_R
+
+        dq_L = self.amp[0] * dbase_L * phidot_L
+        dq_R = self.amp[1] * dbase_R * phidot_R
+
+        return {
+            "q_des": np.array([q_L, q_R], dtype=float),
+            "dq_des": np.array([dq_L, dq_R], dtype=float),
+            "omega": float(self.omega),
+            "amp": self.amp.copy(),
+            "offset": self.offset.copy(),
+            "phi": np.array([self.phi_L, self.phi_R], dtype=float),
+            "phidot": np.array([phidot_L, phidot_R], dtype=float),
+        }
