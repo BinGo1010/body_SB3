@@ -1,0 +1,106 @@
+env:
+  model_xml: "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
+  obsd_xml:  "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
+  num_envs: 2
+  seed: 4
+
+  
+  freeze_human: true # ❌ 禁止同时为 true  false
+  human_pretrained_path: "/home/lvchen/body_exo_SB3/logs/joint_human/best_human_model.zip"
+  human_policy_device: "cpu"
+  human_deterministic: true
+
+  # 方案 2：冻结 EXO，只训练 Human
+  freeze_exo: false
+  exo_pretrained_path: "/home/lvchen/body_exo_SB3/logs/joint_exo/best_exo_model.zip"
+  exo_policy_device: "cpu"
+  exo_deterministic: true
+
+  reset_type: "lyly"
+  target_y_vel: 0.8
+  hip_period: 62
+
+train:
+  total_timesteps: 250000
+  log_dir: "/home/lvchen/body_exo_SB3/logs/walkenv"
+  save_frequency: 50000
+
+  # resume_path: "/home/lvchen/body_exo_SB3/logs/joint_human/best_human_model.zip"
+  resume_path: "/home/lvchen/body_exo_SB3/logs/joint_human/2025-12-25_23-06/best_human_model.zip"
+  # resume_path: "/home/lvchen/body_exo_SB3/logs/joint_exo/best_exo_model.zip"
+  use_vecnormalize: true
+  clip_obs: 10.0
+  norm_reward: false
+  
+  reward_decompose:
+    enable: true
+    window_size: 100
+
+info_debug:
+  enable: true
+  log_freq: 1000
+  keys:
+  - "debug/muscle_mean"
+  - "debug/muscle_std"
+  - "debug/tau_L"
+  - "debug/tau_R"
+    
+video:
+  video_enabled: true
+  save_freq: 50000
+  rollout_length: 1000
+  fps: 30
+  format: "mp4"
+  render_size: [640, 480]
+  render_camera: 0
+  out_dir: "videos"
+  
+# Human 奖励
+reward_weights:
+  imit_pose: 0.4
+  imit_vel: 0.1
+  upright: 0.2
+  vel_reward: 0.2
+  act_mag: 0.1
+  done: -100.0  
+# Exo 奖励
+  exo_track: 0.0
+  exo_load:  0.0     # 权重示例：鼓励省力（越大越省力）
+  exo_smooth: 0.0
+  
+
+# exo
+# reward_weights:
+#   # Human 奖励
+#   imit_pose: 0.4
+#   imit_vel: 0.1
+#   upright: 0.2
+#   vel_reward: 0.2
+#   act_mag: 0.1
+#   done: -100.0  
+#   # Exo 奖励
+#   exo_track: 1.0
+#   exo_load:  0.2     # 权重示例：鼓励省力（越大越省力）
+#   exo_smooth: 0.1
+
+
+ppo:
+  learning_rate: 0.0003
+  batch_size: 256
+  n_steps: 3072
+  n_epochs: 5
+  gamma: 0.99
+  gae_lambda: 0.95
+  ent_coef: 0.0
+  vf_coef: 0.5
+  clip_range: 0.2
+
+eval:
+  eval_freq: 50000
+  n_episodes: 5
+  deterministic: true #这个开关加入噪声评估
+
+wandb:
+  wandb_enabled: true
+  project: "myoLegWalk—test"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
+  name: "walkenv_12_25" # 本次实验名字，不写就用时间戳
