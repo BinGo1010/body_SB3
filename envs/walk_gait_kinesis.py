@@ -99,6 +99,7 @@ class WalkEnvV5(BaseV0):
         'muscle_length',
         'muscle_velocity',
         'muscle_force', 
+        'feet_contacts',#忘记加入
 
         # imitation 
         'phase_var',
@@ -215,18 +216,18 @@ class WalkEnvV5(BaseV0):
         # Base
         obs_dict['t'] = np.array([sim.data.time])
         obs_dict['time'] = np.array([sim.data.time])
-        obs_dict['phase_var'] = np.array([(self.steps / self.hip_period) % 1.0]).copy()  # 相位变量
+        obs_dict['phase_var'] = np.array([(self.steps / self.hip_period) % 1.0]).copy()  # 相位变量-
         # Pelvis State
-        obs_dict['height'] = np.array([self._get_height()]).copy() # 质心高度1d
-        obs_dict['com_vel'] = np.array([self._get_com_velocity().copy()])  # 质心速度3D ！升至3D
-        obs_dict['torso_angle'] = np.array([self._get_torso_angle().copy()]) # 姿态四元数4D
+        obs_dict['height'] = np.array([self._get_height()]).copy() # 质心高度1d-
+        obs_dict['com_vel'] = np.array([self._get_com_velocity().copy()])  # 质心速度3D ！升至3D-
+        obs_dict['torso_angle'] = np.array([self._get_torso_angle().copy()]) # 姿态四元数4D-
         # Feet Contact Forces
         obs_dict["feet_contacts"] = np.array([self._get_feet_contacts().copy()]) # 足部接触力4D
-        obs_dict['feet_heights'] = self._get_feet_heights().copy()  # 双脚高度2D
-        obs_dict['feet_rel_positions'] = self._get_feet_relative_position().copy()  # 脚部相对骨盆位置
+        obs_dict['feet_heights'] = self._get_feet_heights().copy()  # 双脚高度2D-
+        obs_dict['feet_rel_positions'] = self._get_feet_relative_position().copy()  # 脚部相对骨盆位置-
         # Joint Kinematics
-        obs_dict['qpos_without_xy'] = sim.data.qpos[2:].copy()  # 关节位置
-        obs_dict['qvel'] = sim.data.qvel[:].copy() * self.dt    # 关节速度不需要* self.dt
+        obs_dict['qpos_without_xy'] = sim.data.qpos[2:].copy()  # 关节位置-
+        obs_dict['qvel'] = sim.data.qvel[:].copy() * self.dt    # 关节速度不需要* self.dt-
         
         
         # Muscle States

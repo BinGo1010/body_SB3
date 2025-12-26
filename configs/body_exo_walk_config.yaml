@@ -5,13 +5,13 @@ env:
   seed: 4
 
   # 方案 1：冻结 Human
-  freeze_human: true # ❌ 禁止同时为 true  false
+  freeze_human: false # ❌ 禁止同时为 true  false
   human_pretrained_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
   human_policy_device: "cpu"
   human_deterministic: true # 预测动作时是否采用确定性模式
 
   # 方案 2：冻结 EXO
-  freeze_exo: false
+  freeze_exo: true
   exo_pretrained_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip"
   exo_policy_device: "cpu"
   exo_deterministic: true # 预测动作时是否采用确定性模式
