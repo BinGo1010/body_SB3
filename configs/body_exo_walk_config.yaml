@@ -4,30 +4,30 @@ env:
   num_envs: 2
   seed: 4
 
-  
+  # 方案 1：冻结 Human
   freeze_human: true # ❌ 禁止同时为 true  false
-  human_pretrained_path: "/home/lvchen/body_exo_SB3/logs/joint_human/best_human_model.zip"
+  human_pretrained_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
   human_policy_device: "cpu"
-  human_deterministic: true
+  human_deterministic: true # 预测动作时是否采用确定性模式
 
-  # 方案 2：冻结 EXO，只训练 Human
+  # 方案 2：冻结 EXO
   freeze_exo: false
-  exo_pretrained_path: "/home/lvchen/body_exo_SB3/logs/joint_exo/best_exo_model.zip"
+  exo_pretrained_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip"
   exo_policy_device: "cpu"
-  exo_deterministic: true
+  exo_deterministic: true # 预测动作时是否采用确定性模式
 
   reset_type: "lyly"
   target_y_vel: 0.8
   hip_period: 62
 
 train:
-  total_timesteps: 250000
-  log_dir: "/home/lvchen/body_exo_SB3/logs/walkenv"
+  total_timesteps: 25000000
+  log_dir: "/home/lvchen/body_SB3/logs"
   save_frequency: 50000
 
-  # resume_path: "/home/lvchen/body_exo_SB3/logs/joint_human/best_human_model.zip"
-  resume_path: "/home/lvchen/body_exo_SB3/logs/joint_human/2025-12-25_23-06/best_human_model.zip"
-  # resume_path: "/home/lvchen/body_exo_SB3/logs/joint_exo/best_exo_model.zip"
+  # 续训设置 对应 false 一方
+  # resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
+  resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
   use_vecnormalize: true
   clip_obs: 10.0
   norm_reward: false
@@ -98,7 +98,7 @@ ppo:
 eval:
   eval_freq: 50000
   n_episodes: 5
-  deterministic: true #这个开关加入噪声评估
+  deterministic: true # 是否加入噪声评估
 
 wandb:
   wandb_enabled: true

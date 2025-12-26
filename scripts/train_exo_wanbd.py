@@ -55,7 +55,7 @@ def pick_config_path(cli_config: Optional[str]) -> Path:
     env_cfg = os.environ.get("BODY_EXO_WALK_CONFIG", "").strip()
     if env_cfg:
         return Path(env_cfg).expanduser().resolve()
-    p1 = Path("/home/lvchen/body_exo_SB3/configs/body_exo_walk_config.yaml")
+    p1 = Path("/home/lvchen/body_SB3/configs/body_exo_walk_config.yaml")
     if p1.is_file():
         return p1.resolve()
     return (PROJECT_ROOT / "configs" / "body_exo_walk_config.yaml").resolve()
@@ -948,11 +948,10 @@ def main():
 
     # 你指定的两条根目录（强制使用，不再依赖 YAML 的 train.log_dir）
     if mode_tag == "exo":
-        base_root = Path("/home/lvchen/body_exo_SB3/logs/joint_exo")
+        base_root = Path("/home/lvchen/body_SB3/logs/joint_exo")
     elif mode_tag == "human":
-        base_root = Path("/home/lvchen/body_exo_SB3/logs/joint_human")
-    else:
-        base_root = Path("/home/lvchen/body_exo_SB3/logs/joint")
+        base_root = Path("/home/lvchen/body_SB3/logs/joint_human")
+
 
     run_dir = (base_root / ts_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
