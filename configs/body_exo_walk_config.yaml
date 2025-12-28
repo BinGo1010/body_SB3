@@ -1,17 +1,17 @@
 env:
-  model_xml: "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
-  obsd_xml:  "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
-  num_envs: 2
+  model_xml: "/home/lvchen/body_SB3/myosuite/lib/python3.10/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
+  obsd_xml:  "/home/lvchen/body_SB3/myosuite/lib/python3.10/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
+  num_envs: 12
   seed: 4
 
   # 方案 1：冻结 Human
-  freeze_human: true # ❌ 禁止同时为 true  false
+  freeze_human: false # ❌ 禁止同时为 true  false
   human_pretrained_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
   human_policy_device: "cpu"
   human_deterministic: true # 预测动作时是否采用确定性模式
 
   # 方案 2：冻结 EXO
-  freeze_exo: false
+  freeze_exo: true
   exo_pretrained_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip"
   exo_policy_device: "cpu"
   exo_deterministic: true # 预测动作时是否采用确定性模式
@@ -25,9 +25,9 @@ train:
   log_dir: "/home/lvchen/body_SB3/logs"
   save_frequency: 50000
 
-  # 续训设置 对应 false 一方
-  # resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
-  resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
+  # 续训设置 对应打开 false 一方
+  resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
+  # resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
   use_vecnormalize: true
   clip_obs: 10.0
   norm_reward: false
@@ -60,8 +60,8 @@ reward_weights:
   imit_pose: 0.4
   imit_vel: 0.1
   upright: 0.2
-  vel_reward: 0.2
-  act_mag: 0.1
+  vel_reward: 0.25
+  act_mag: 0.05
   done: -100.0  
 # Exo 奖励
   exo_track: 0.0
