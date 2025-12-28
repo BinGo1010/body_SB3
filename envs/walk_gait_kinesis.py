@@ -279,6 +279,7 @@ class WalkEnvV5(BaseV0):
         upright = self._get_upright_rew()
         vel_reward = self._get_vel_reward()
         act_mag = self.get_act_energy()
+        center = self._get_center_reward() 
         # 终止
         done = self._get_done()
 
@@ -291,6 +292,7 @@ class WalkEnvV5(BaseV0):
             ('upright', upright), 
             ('vel_reward', vel_reward),
             ('act_mag', act_mag),
+            ('center', center), 
             # 必须字段
             ('sparse', vel_reward),            # 可以根据需要改成 imit_pose
             ('solved', (vel_reward > 0.8) and (imit_pose > 0.8)),      # 简单判定：模仿奖励足够高
@@ -515,44 +517,59 @@ class WalkEnvV5(BaseV0):
             self.sim.data.body_xpos[foot_id_r] - self.sim.data.body_xpos[pelvis]
         ])
 
-    # def _get_vel_reward(self):
-    #     """
-    #     Gaussian that incentivizes a walking velocity.
-    #     """
-    #     vel = self._get_com_velocity()
-    #     return np.exp(-np.square(self.target_y_vel - vel[1])) + \
-    #            np.exp(-np.square(self.target_x_vel - vel[0]))
-
-    def _get_vel_reward(self, k_xy: float = 5.0) -> float:
+    def _get_vel_reward(self):
         """
-        Root 轨迹跟踪奖励：
-
-        - 参考轨迹：从 reset 时的 pelvis 初始位置出发，
-        以 (target_x_vel, target_y_vel) 在世界 x-y 平面上匀速前进：
-            p_ref(t) = p0_xy + [vx, vy] * t
-        - 当前 root 位置：pelvis 的 world 坐标 (x, y)
-        - 奖励：误差越小，奖励越接近 1；偏离越大，奖励趋近于 0：
-            r = exp( -k_xy * || p_xy - p_ref(t) ||^2 )
+        Gaussian that incentivizes a walking velocity.
         """
-        # 当前时间
-        t = float(self.sim.data.time)
+        vel = self._get_com_velocity()
+        return np.exp(-np.square(self.target_y_vel - vel[1])) + \
+               np.exp(-np.square(self.target_x_vel - vel[0]))
 
-        # 当前 pelvis 的平面位置 (x, y)
+    def _get_center_reward(self, y_tol=0.10, vy_tol=0.20):
         pelvis_id = self.sim.model.body_name2id('pelvis')
         p_xy = self.sim.data.body_xpos[pelvis_id][:2]
+        v_xy = self.sim.data.body_xvelp[pelvis_id][:2]  # MuJoCo: world linear vel
 
-        # 参考平面位置：初始点 + 期望速度 * 时间
-        vx = float(self.target_x_vel)
-        vy = -float(self.target_y_vel)
-        p_ref_xy = self._root_ref_xy + np.array([vx, vy]) * t
+        y0 = float(self._root_ref_xy[1])
+        y_err  = float(p_xy[1] - y0)
+        vy_err = float(v_xy[1] - 0.0)  # 期望横向速度为0
 
-        # 位置误差
-        err_xy = p_xy - p_ref_xy
-        err_sq = float(np.dot(err_xy, err_xy))
+        # 归一化二次罚：在容忍带内仍有梯度，不会很快饱和到0
+        ry  = 1.0 - min((y_err / y_tol)**2, 1.0)
+        rvy = 1.0 - min((vy_err / vy_tol)**2, 1.0)
 
-        # 高斯型奖励
-        reward = np.exp(-k_xy * err_sq)
-        return reward
+        return 0.5 * ry + 0.5 * rvy
+    
+    # def _get_vel_reward(self, k_xy: float = 5.0) -> float:
+    #     """
+    #     Root 轨迹跟踪奖励：
+
+    #     - 参考轨迹：从 reset 时的 pelvis 初始位置出发，
+    #     以 (target_x_vel, target_y_vel) 在世界 x-y 平面上匀速前进：
+    #         p_ref(t) = p0_xy + [vx, vy] * t
+    #     - 当前 root 位置：pelvis 的 world 坐标 (x, y)
+    #     - 奖励：误差越小，奖励越接近 1；偏离越大，奖励趋近于 0：
+    #         r = exp( -k_xy * || p_xy - p_ref(t) ||^2 )
+    #     """
+    #     # 当前时间
+    #     t = float(self.sim.data.time)
+
+    #     # 当前 pelvis 的平面位置 (x, y)
+    #     pelvis_id = self.sim.model.body_name2id('pelvis')
+    #     p_xy = self.sim.data.body_xpos[pelvis_id][:2]
+
+    #     # 参考平面位置：初始点 + 期望速度 * 时间
+    #     vx = float(self.target_x_vel)
+    #     vy = -float(self.target_y_vel)
+    #     p_ref_xy = self._root_ref_xy + np.array([vx, vy]) * t
+
+    #     # 位置误差
+    #     err_xy = p_xy - p_ref_xy
+    #     err_sq = float(np.dot(err_xy, err_xy))
+
+    #     # 高斯型奖励
+    #     reward = np.exp(-k_xy * err_sq)
+    #     return reward
 
     def _get_cyclic_rew(self):
         """
