@@ -26,8 +26,8 @@ train:
   save_frequency: 50000
 
   # 续训设置 对应 false 一方
-  # resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
-  resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
+  resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
+  # resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
   use_vecnormalize: true
   clip_obs: 10.0
   norm_reward: false

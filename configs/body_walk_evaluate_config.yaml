@@ -1,7 +1,8 @@
 # /home/lvchen/body_SB3/configs/body_walk_evaluate_config.yaml
 
 env_id: myoLegWalk-v0
-model: /home/lvchen/body_SB3/logs/walkenv/models/eval_x/best_model.zip
+# model: /home/lvchen/body_SB3/logs/walkenv/models/eval_x/best_model.zip
+model: /home/lvchen/body_exo_SB3/best_human_model.zip
 vecnorm: ""                 # 可选：VecNormalize pkl 路径
 
 n_eval: 1

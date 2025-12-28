@@ -99,7 +99,7 @@ class WalkEnvV5(BaseV0):
         'muscle_length',
         'muscle_velocity',
         'muscle_force', 
-        'feet_contacts',#忘记加入
+        # 'feet_contacts',#忘记加入
 
         # imitation 
         'phase_var',
