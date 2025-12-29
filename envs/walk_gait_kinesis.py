@@ -4,7 +4,6 @@ from myosuite.utils import gym
 import numpy as np
 from myosuite.envs.myo.base_v0 import BaseV0
 from myosuite.utils.quat_math import quat2mat
-from cpg.params_12_bias import CMUParams
 from pathlib import Path
 import yaml
 import os
@@ -13,6 +12,8 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
+from cpg.params_12_bias import CMUParams
 
 CSV_PATH = os.path.join(project_root, "cpg", "fourier_coefficients_order6_132.csv")
 
@@ -525,18 +526,23 @@ class WalkEnvV5(BaseV0):
         return np.exp(-np.square(self.target_y_vel - vel[1])) + \
                np.exp(-np.square(self.target_x_vel - vel[0]))
 
-    def _get_center_reward(self, y_tol=0.10, vy_tol=0.20):
+    def _get_center_reward(self, y_tol=0.10, vy_tol=0.20) -> float:
         pelvis_id = self.sim.model.body_name2id('pelvis')
-        p_xy = self.sim.data.body_xpos[pelvis_id][:2]
-        v_xy = self.sim.data.body_xvelp[pelvis_id][:2]  # MuJoCo: world linear vel
+
+        # position (兼容 body_xpos / xpos)
+        if hasattr(self.sim.data, "body_xpos"):
+            p_xy = np.asarray(self.sim.data.body_xpos[pelvis_id][:2])
+        else:
+            p_xy = np.asarray(self.sim.data.xpos[pelvis_id][:2])
+
+        v_xy = self._get_body_xy_vel_world(pelvis_id)  # (vx, vy)
 
         y0 = float(self._root_ref_xy[1])
-        y_err  = float(p_xy[1] - y0)
-        vy_err = float(v_xy[1] - 0.0)  # 期望横向速度为0
+        y_err = float(p_xy[1] - y0)
+        vy_err = float(v_xy[1])
 
-        # 归一化二次罚：在容忍带内仍有梯度，不会很快饱和到0
-        ry  = 1.0 - min((y_err / y_tol)**2, 1.0)
-        rvy = 1.0 - min((vy_err / vy_tol)**2, 1.0)
+        ry  = 1.0 - min((y_err / y_tol) ** 2, 1.0)
+        rvy = 1.0 - min((vy_err / vy_tol) ** 2, 1.0)
 
         return 0.5 * ry + 0.5 * rvy
     
@@ -789,3 +795,28 @@ class WalkEnvV5(BaseV0):
         act_energy_reward = np.exp(k * energy_term)
 
         return float(act_energy_reward)
+    
+    def _get_body_xy_vel_world(self, body_id: int) -> np.ndarray:
+        """Return body's linear velocity in world frame, only (vx, vy). Robust across MuJoCo bindings."""
+        d = self.sim.data
+        m = self.sim.model
+
+        # 1) legacy / wrapper fields (if any)
+        if hasattr(d, "body_xvelp"):
+            v3 = np.asarray(d.body_xvelp[body_id]).copy()  # (3,)
+            return v3[:2]
+        if hasattr(d, "xvelp"):
+            v3 = np.asarray(d.xvelp[body_id]).copy()
+            return v3[:2]
+
+        # 2) official mujoco python: cvel is 6D spatial velocity (ang[0:3], lin[3:6]) in world frame
+        if hasattr(d, "cvel"):
+            v3 = np.asarray(d.cvel[body_id][3:6]).copy()   # linear part
+            return v3[:2]
+
+        # 3) fallback: compute v = Jp(q) * qvel at body COM
+        jacp = np.zeros((3, m.nv), dtype=np.float64)
+        jacr = np.zeros((3, m.nv), dtype=np.float64)
+        mujoco.mj_jacBodyCom(m, d, jacp, jacr, body_id)
+        v3 = jacp @ np.asarray(d.qvel)
+        return np.asarray(v3[:2]).copy()
