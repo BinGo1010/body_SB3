@@ -9,7 +9,7 @@ __pycache__/
 .env
 *.log
 logs/
-
+myosuite/
 # Data & Model
 data/
 datasets/
