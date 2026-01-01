@@ -9,12 +9,12 @@
         
         <body name="rr_Link" pos="0.17596 0.11423 -0.11131" quat="0.34494 -0.667777 -0.232539 0.617264" gravcomp="1">
             <inertial pos="0.0053125 -0.00033527 -0.0033844" quat="0.0220877 0.708216 -0.0223834 0.705295" mass="0.022269" diaginertia="3.00903e-05 1.83855e-05 1.19352e-05" />
-            <joint name="rr_joint" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.571 1.571" />
+            <joint name="rr_joint" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.571 1.571"  damping="1e-4" armature="0" frictionloss="0"/>
             <geom type="mesh" rgba="1 1 1 1" mesh="rr_Link" />
             <body name="ra_Link" pos="0.072919 -0.011668 -0.005" quat="0.677987 0.677989 0.20083 0.200829" gravcomp="1">
                 <inertial pos="0.19708 0.084822 0.0086953" quat="-0.284834 0.70658 0.0503551 0.645816" mass="0.13171" diaginertia="0.000726782 0.000701376 6.17719e-05" />
                 
-                <joint name="ra_joint" pos="0 0 0" axis="0 0 1" limited="true" range="-1.571 1.571" />
+                <joint name="ra_joint" pos="0 0 0" axis="0 0 1" limited="true" range="-1.571 1.571" damping="1e-4" armature="0" frictionloss="0"/>
                 <geom type="mesh" rgba="1 1 1 1" mesh="ra_Link" />
                 <body name="ra_attach" pos="0.27 0.12 -0.02" quat="1 0 0 0" gravcomp="1">
                     
@@ -26,12 +26,12 @@
         
         <body name="lr_Link" pos="-0.17596 0.11423 -0.11131" quat="0.617263 0.232537 0.667778 0.344942" gravcomp="1">
             <inertial pos="0.0053122 0.00033545 -0.0033844" quat="-0.0220937 0.708216 0.0223894 0.705294" mass="0.022269" diaginertia="3.00893e-05 1.83855e-05 1.19352e-05" />
-            <joint name="lr_joint" pos="0 0 0" axis="0 0 1" limited="true" range="-1.571 1.571" />
+            <joint name="lr_joint" pos="0 0 0" axis="0 0 1" limited="true" range="-1.571 1.571" damping="1e-4" armature="0" frictionloss="0"/>
             <geom type="mesh" rgba="1 1 1 1" mesh="lr_Link" />
             <body name="la_Link" pos="0.072919 0.011668 -0.005" quat="0.677987 -0.677989 0.20083 -0.200829" gravcomp="1">
                 <inertial pos="0.1971 -0.084747 0.0086939" quat="0.284789 0.706579 -0.0504234 0.645832" mass="0.13171" diaginertia="0.000726649 0.000701248 6.1763e-05" />
                 
-                <joint name="la_joint" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.571 1.571" />
+                <joint name="la_joint" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.571 1.571" damping="1e-4" armature="0" frictionloss="0"/>
                 <geom type="mesh" rgba="1 1 1 1" mesh="la_Link" />
                 
                 <body name="la_attach" pos="0.27 -0.12 -0.02" quat="1 0 0 0" gravcomp="1">

@@ -1,12 +1,12 @@
 env:
   model_xml: "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
   obsd_xml:  "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
-  num_envs: 2
+  num_envs: 1
   seed: 4
 
   # 方案 1：冻结 Human
   freeze_human: false # ❌ 禁止同时为 true  false
-  human_pretrained_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
+  human_pretrained_path: "/home/lvchen/body_SB3/logs/joint_human/best_model.zip"
   human_policy_device: "cpu"
   human_deterministic: true # 预测动作时是否采用确定性模式
 
@@ -26,11 +26,13 @@ train:
   save_frequency: 50000
 
   # 续训设置 对应 false 一方
-  resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
+  resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_model.zip"
+  # resume_path: "/home/lvchen/body_SB3/logs/joint_human/40sec/best_human_model.zip"
   # resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
-  use_vecnormalize: true
+  use_vecnormalize: false
   clip_obs: 10.0
   norm_reward: false
+  imit_pose_log_enabled: true
   
   reward_decompose:
     enable: true
@@ -47,7 +49,7 @@ info_debug:
     
 video:
   video_enabled: true
-  save_freq: 50000
+  save_freq: 2000
   rollout_length: 1000
   fps: 30
   format: "mp4"
@@ -86,8 +88,9 @@ reward_weights:
 
 ppo:
   learning_rate: 0.0003
-  batch_size: 256
-  n_steps: 3072
+  # 减小 batch_size 与 n_steps 以降低每次训练计算中分布构造时的显存峰值
+  batch_size: 64
+  n_steps: 512
   n_epochs: 5
   gamma: 0.99
   gae_lambda: 0.95
@@ -103,4 +106,4 @@ eval:
 wandb:
   wandb_enabled: true
   project: "myoLegWalk—test"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
-  name: "walkenv_12_25" # 本次实验名字，不写就用时间戳
+  name: "walkenv_12_26" # 本次实验名字，不写就用时间戳

@@ -726,8 +726,7 @@ class RewardDecomposeCallback(BaseCallback):
 class InfoDebugCallback(BaseCallback):
     DEFAULT_KEYS = [
         "debug/human_policy_used",
-        "debug/muscle_mean",
-        "debug/muscle_std",
+        "debug/muscle_sat_ratio",  # 肌肉饱和率
         "debug/tau_L",
         "debug/tau_R",
         "debug/q_des_L", "debug/q_des_R",
@@ -1017,7 +1016,7 @@ def main():
     # - clip_obs: VecNormalize 输出裁切范围，且会体现在 env.observation_space 的 low/high 上
     # - use_vecnormalize: 建议在单侧训练（Box obs）时开启；联合训练（Dict obs）默认不启用
     clip_obs = float(tcfg.get("clip_obs", 10.0))
-    use_vecnormalize = bool(tcfg.get("use_vecnormalize", True))
+    use_vecnormalize = bool(tcfg.get("use_vecnormalize", False))
     norm_reward = bool(tcfg.get("norm_reward", False))
 
     env_kwargs = dict(

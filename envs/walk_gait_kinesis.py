@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 import os
 import sys
+import csv
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
@@ -209,6 +210,10 @@ class WalkEnvV5(BaseV0):
         # 调整地形（如果未使用）
         self.sim.model.geom_rgba[self.sim.model.geom_name2id('terrain')][-1] = 0.0
         self.sim.model.geom_pos[self.sim.model.geom_name2id('terrain')] = np.array([0, 0, -10])
+        self.imit_pose_log_enabled = kwargs.get("imit_pose_log_enabled", True)
+        self.imit_pose_log_dir = kwargs.get("imit_pose_log_dir", "./logs/imit_pose")
+        self.imit_pose_log_every = int(kwargs.get("imit_pose_log_every", 1))          # 每 N 步记录一次
+        self.imit_pose_log_flush_every = int(kwargs.get("imit_pose_log_flush_every", 200))
 
     # 计算观测字典
     def get_obs_dict(self, sim):
@@ -425,27 +430,56 @@ class WalkEnvV5(BaseV0):
         )  # rad
         cur = self._get_angle(self.imit_joint_names).astype(np.float32)  # rad
 
-        # 关键：先做按关节归一化
-        diff = (des - cur) / self.imit_scale  # 无量纲，12 维
+        diff = (des - cur) / self.imit_scale  # 无量纲
 
-        # 可以加权（髋膝权重大一些）
         w = np.array([
-            3.0, 1.0, 1.0,   # 左髋：屈伸最重要
-            3.0, 1.0, 1.0,   # 右髋
-            3.0, 3.0,        # 左右膝
-            1.5, 0.5,        # 左踝/跟距
-            1.5, 0.5,        # 右踝/跟距
+            3.0, 1.0, 1.0,
+            3.0, 1.0, 1.0,
+            3.0, 3.0,
+            1.5, 0.5,
+            1.5, 0.5,
         ], dtype=np.float32)
 
-        mse = float(np.mean(w * diff**2))   # 这里就是“各关节相对误差”的加权平均
+        mse = float(np.mean(w * diff**2))
         rew = float(np.exp(-sigma * mse))
+
+        # ====== 记录到 CSV（可开关）======
+        if bool(getattr(self, "imit_pose_log_enabled", True)):
+            self._log_imit_pose(phase_var, phase_next, des, cur, diff, mse, rew)
+
         return rew
+
+    # def _get_imit_pose_rew(self, sigma=20.0):
+    #     phase_var = (self.steps / self.hip_period) % 1.0
+    #     phase_next = (phase_var + 1.0 / self.hip_period) % 1.0
+
+    #     des = np.array(
+    #         [self.cmu_params.eval_joint_phase(jn, phase_next) for jn in self.imit_joint_names],
+    #         dtype=np.float32
+    #     )  # rad
+    #     cur = self._get_angle(self.imit_joint_names).astype(np.float32)  # rad
+
+    #     # 关键：先做按关节归一化
+    #     diff = (des - cur) / self.imit_scale  # 无量纲，12 维
+
+    #     # 可以加权（髋膝权重大一些）
+    #     w = np.array([
+    #         3.0, 1.0, 1.0,   # 左髋：屈伸最重要
+    #         3.0, 1.0, 1.0,   # 右髋
+    #         3.0, 3.0,        # 左右膝
+    #         1.5, 0.5,        # 左踝/跟距
+    #         1.5, 0.5,        # 右踝/跟距
+    #     ], dtype=np.float32)
+
+    #     mse = float(np.mean(w * diff**2))   # 这里就是“各关节相对误差”的加权平均
+    #     rew = float(np.exp(-sigma * mse))
+    #     return rew
     # ----------------- 速度模仿奖励 -----------------
     def _get_imit_vel_rew(self, sigma=5.0):
         """DeepMimic-style joint velocity imitation reward."""
         phase_var = (self.steps / self.hip_period) % 1.0
         phase_next = (phase_var + 1.0 / self.hip_period) % 1.0
-        phase_dot = 50.0 / float(self.hip_period)   # cycle/s
+        phase_dot = 1.0 / (float(self.hip_period) * float(self.dt))    # cycle/s
 
         dq_ref = np.array([self.cmu_params.eval_joint_phase_vel(jn, phase_next, phase_dot=phase_dot) for jn in self.imit_joint_names])
         dq_cur = self._get_vel(self.imit_joint_names).astype(np.float32)
@@ -773,3 +807,75 @@ class WalkEnvV5(BaseV0):
         act_energy_reward = np.exp(k * energy_term)
 
         return float(act_energy_reward)
+
+    def _sanitize_col(self, s: str) -> str:
+        # 避免 joint 名里有特殊字符导致列名奇怪
+        return "".join([c if c.isalnum() or c in "_-" else "_" for c in str(s)])
+
+    def _ensure_imit_pose_logger(self):
+        """延迟创建 CSV（首次需要时才创建），避免 reset 前 sim 未就绪等问题。"""
+        if getattr(self, "_imit_pose_log_f", None) is not None:
+            return
+
+        log_dir = getattr(self, "imit_pose_log_dir", "./logs/imit_pose")
+        os.makedirs(log_dir, exist_ok=True)
+
+        # 多进程下用 PID 区分文件；你也可加 env_idx
+        pid = os.getpid()
+        fname = f"imit_pose_pid{pid}.csv"
+        path = os.path.join(log_dir, fname)
+
+        f = open(path, "w", newline="", encoding="utf-8")
+        writer = csv.writer(f)
+
+        # 表头
+        cols = ["time", "step", "phase_var", "phase_next", "mse", "rew"]
+        for jn in self.imit_joint_names:
+            j = self._sanitize_col(jn)
+            cols += [f"des_{j}", f"cur_{j}", f"diff_{j}"]
+        writer.writerow(cols)
+        f.flush()
+
+        self._imit_pose_log_f = f
+        self._imit_pose_log_writer = writer
+        self._imit_pose_log_path = path
+
+    def _log_imit_pose(self, phase_var, phase_next, des, cur, diff, mse, rew):
+        """写一行 CSV。"""
+        # 降采样：每 N 步写一次，避免文件太大
+        every = int(getattr(self, "imit_pose_log_every", 1))
+        if every > 1 and (int(getattr(self, "steps", 0)) % every != 0):
+            return
+
+        self._ensure_imit_pose_logger()
+
+        sim_time = float(getattr(self.sim.data, "time", 0.0))
+        step = int(getattr(self, "steps", 0))
+
+        row = [sim_time, step, float(phase_var), float(phase_next), float(mse), float(rew)]
+        # des/cur/diff 逐关节写入
+        for i in range(len(self.imit_joint_names)):
+            row += [float(des[i]), float(cur[i]), float(diff[i])]
+
+        self._imit_pose_log_writer.writerow(row)
+        # 频繁 flush 会慢；建议每隔一段 flush
+        flush_every = int(getattr(self, "imit_pose_log_flush_every", 200))
+        if flush_every > 0 and (step % flush_every == 0):
+            self._imit_pose_log_f.flush()
+
+    def close(self):
+        """确保关闭文件句柄。"""
+        try:
+            f = getattr(self, "_imit_pose_log_f", None)
+            if f is not None:
+                f.flush()
+                f.close()
+                self._imit_pose_log_f = None
+                self._imit_pose_log_writer = None
+        except Exception:
+            pass
+        # 如果 BaseV0 有 close，则继续调用
+        try:
+            super().close()
+        except Exception:
+            pass

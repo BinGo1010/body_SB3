@@ -1,0 +1,63 @@
+{
+  "env_id": "myoLegWalk-v0",
+  "model_path": "/home/lvchen/body_SB3/logs/walkenv/models/best/best_model.zip",
+  "vecnorm_path": null,
+  "n_eval": 10,
+  "seed": 0,
+  "deterministic": true,
+  "horizon_used": 1000,
+  "elapsed_sec": 36.6632981300354,
+  "sat_threshold": 0.95,
+  "activation_source_prefer": "auto",
+  "sat_ratio_mean_mean": 0.0,
+  "sat_ratio_mean_std": 0.0,
+  "sat_ratio_p95_mean": 0.0,
+  "sat_ratio_p95_std": 0.0,
+  "sat_any_frac_mean": 0.0,
+  "sat_any_frac_std": 0.0,
+  "muscle_u_max_max_mean": 0.9241418242436359,
+  "muscle_u_max_max_std": 0.0,
+  "n_steps_valid_mean": 1000.0,
+  "n_steps_valid_std": 0.0,
+  "episodes_no_muscle_data": 0,
+  "global_step_sat_ratio": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p05": 0.0,
+    "p25": 0.0,
+    "p50": 0.0,
+    "p75": 0.0,
+    "p95": 0.0,
+    "n": 10000
+  },
+  "global_step_muscle_u_max": {
+    "mean": 0.9225309683628243,
+    "std": 0.03141267753142506,
+    "min": 0.0,
+    "max": 0.9241418242436359,
+    "p05": 0.924082393355365,
+    "p25": 0.9241352306946674,
+    "p50": 0.9241411529452817,
+    "p75": 0.9241418131812749,
+    "p95": 0.9241418238732262,
+    "n": 10000
+  },
+  "global_step_muscle_mean": {
+    "mean": 0.35456642028018126,
+    "std": 0.03136946369069094,
+    "min": 0.0,
+    "max": 0.42018995385210356,
+    "p05": 0.30771284278821853,
+    "p25": 0.33247701938065516,
+    "p50": 0.3555551915614753,
+    "p75": 0.37627188748336854,
+    "p95": 0.40250082187170266,
+    "n": 10000
+  },
+  "saved_files": {
+    "metrics_csv": "./eval_out_muscle/metrics_muscle.csv",
+    "summary_json": "./eval_out_muscle/summary_muscle.json"
+  }
+}

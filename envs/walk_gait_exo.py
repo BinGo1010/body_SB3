@@ -12,6 +12,7 @@ from collections import deque
 import yaml
 import os
 import sys
+import csv
 
 
 
@@ -188,6 +189,7 @@ class WalkEnvV4Multi(BaseV0):
                target_x_vel=0.0,
                target_y_vel=1.2,
                target_rot=None,
+               frame_skip=10, 
                 # ====== Human pretrained policy (optional) ======
                 human_pretrained_path: str = None,
                 freeze_human: bool = False,
@@ -268,6 +270,7 @@ class WalkEnvV4Multi(BaseV0):
         super()._setup(
             obs_keys=self.obs_keys_human,
             weighted_reward_keys=weighted_reward_keys,
+            frame_skip=frame_skip, 
             **kwargs
         )
 
@@ -315,6 +318,11 @@ class WalkEnvV4Multi(BaseV0):
         self.exo_policy = None
         self.exo_policy_loaded = False
         self.exo_policy_obs_dim = None
+        
+        self.imit_pose_log_enabled = kwargs.get("imit_pose_log_enabled", False)
+        self.imit_pose_log_dir = kwargs.get("imit_pose_log_dir", "./logs/imit_pose")
+        self.imit_pose_log_every = int(kwargs.get("imit_pose_log_every", 1))          # 每 N 步记录一次
+        self.imit_pose_log_flush_every = int(kwargs.get("imit_pose_log_flush_every", 200))
 
         if self.freeze_exo:
             self._load_exo_policy_if_needed()
@@ -334,12 +342,22 @@ class WalkEnvV4Multi(BaseV0):
         else:
             act_dim = self.n_muscle_act + self.n_exo_act
 
-        self.action_space = gym.spaces.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(act_dim,),
-            dtype=np.float32,
-        )
+        # act_dim = self.n_muscle_act + 5  # 你原来的 act_dim
+        if getattr(self, "freeze_human", False):
+            # 冻结人体：只训练 EXO（5维），保持 [-1,1]
+            self.action_space = gym.spaces.Box(
+                low=-1.0, high=1.0, shape=(5,), dtype=np.float32
+            )
+        else:
+            # 联合：肌肉 [0,1] + EXO 5维 [-1,1]
+            low  = np.concatenate([
+                -np.ones(self.n_muscle_act, dtype=np.float32)
+            ])
+            high = np.concatenate([
+                np.ones(self.n_muscle_act, dtype=np.float32)
+            ])
+            self.action_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
+
 
         # 6) 先用当前状态构造一次 obs，自动推断人/机观测维度 → Dict space
         dummy_h = self._build_dummy_human_obs()
@@ -371,8 +389,6 @@ class WalkEnvV4Multi(BaseV0):
         self._exo_tau_hist = deque(maxlen=3)   # 存 [tau_L, tau_R]
         self.exo_sigma_as = float(kwargs.pop("exo_sigma_as", 0.2))     # σ_as，可放 YAML
         self.exo_tau_smooth_scale = float(kwargs.pop("exo_tau_smooth_scale", 100.0))  # 归一化尺度100(Nm)
-
-
 
     # ========== 观测相关 ==========
 
@@ -564,16 +580,9 @@ class WalkEnvV4Multi(BaseV0):
         nkey = int(getattr(self.sim.model, "nkey", 0))
 
         if self.reset_type == 'random':
-            qpos, qvel = self.get_randomized_initial_state()
-
+            qpos, qvel = self.sim.model.key_qpos[0], self.sim.model.key_qvel[0]
         elif self.reset_type == 'init':
-            # 尝试使用 CSV 的第一帧作为“固定初始状态”
-            self._load_reset_states_from_csv()
-            if getattr(self, "_reset_qpos_list", None) is not None:
-                qpos = self._reset_qpos_list[0].copy()
-                qvel = self._reset_qvel_list[0].copy()
-            else:
-                qpos, qvel = self.sim.model.key_qpos[0], self.sim.model.key_qvel[0]
+            qpos, qvel = self.sim.model.key_qpos[0], self.sim.model.key_qvel[0]
         else:
             qpos, qvel = self.sim.model.key_qpos[0], self.sim.model.key_qvel[0]
 
@@ -619,8 +628,6 @@ class WalkEnvV4Multi(BaseV0):
         except Exception:
             # 不影响 reset 主流程
             self._exo_dq_hist = collections.deque(maxlen=4)
-
-
 # collect `reset_infos` per environment.
         self._ensure_exo_pd_cache()
 
@@ -787,28 +794,26 @@ class WalkEnvV4Multi(BaseV0):
             dtype=np.float32
         )  # rad
         cur = self._get_angle(self.imit_joint_names).astype(np.float32)  # rad
-
-        # 关键：先做按关节归一化
-        diff = (des - cur) / self.imit_scale  # 无量纲，12 维
-
-        # 可以加权（髋膝权重大一些）
+        diff = (des - cur) / self.imit_scale  # 无量纲
         w = np.array([
-            3.0, 1.0, 1.0,   # 左髋：屈伸最重要
-            3.0, 1.0, 1.0,   # 右髋
-            3.0, 3.0,        # 左右膝
-            1.5, 0.5,        # 左踝/跟距
-            1.5, 0.5,        # 右踝/跟距
+            3.0, 1.0, 1.0,
+            3.0, 1.0, 1.0,
+            3.0, 3.0,
+            1.5, 0.5,
+            1.5, 0.5,
         ], dtype=np.float32)
-
-        mse = float(np.mean(w * diff**2))   # 这里就是“各关节相对误差”的加权平均
+        mse = float(np.mean(w * diff**2))
         rew = float(np.exp(-sigma * mse))
+        # ====== 记录到 CSV（可开关）======
+        if bool(getattr(self, "imit_pose_log_enabled", False)):
+            self._log_imit_pose(phase_var, phase_next, des, cur, diff, mse, rew)
         return rew
     # ----------------- 速度模仿奖励 -----------------
     def _get_imit_vel_rew(self, sigma=5.0):
         """DeepMimic-style joint velocity imitation reward."""
         phase_var = (self.steps / self.hip_period) % 1.0
         phase_next = (phase_var + 1.0 / self.hip_period) % 1.0
-        phase_dot = 50.0 / float(self.hip_period)   # cycle/s
+        phase_dot = 1.0 / (float(self.hip_period) * float(self.dt))  # cycles/s
 
         dq_ref = np.array([self.cmu_params.eval_joint_phase_vel(jn, phase_next, phase_dot=phase_dot) for jn in self.imit_joint_names])
         dq_cur = self._get_vel(self.imit_joint_names).astype(np.float32)
@@ -1384,28 +1389,6 @@ class WalkEnvV4Multi(BaseV0):
             info.update(dc)
 
         return obs, reward, terminal, truncated, info
-
-
-    # def _map_minus1_1_to_0_1(self, x):
-    #     """[-1,1] → [0,1]"""
-    #     x = np.asarray(x, dtype=float)
-    #     return 0.5 * (x + 1.0)
-
-    # def _clip01(self, x):
-    #     x = np.asarray(x, dtype=float)
-    #     return np.clip(x, 0.0, 1.0)
-
-    # def _clip_to_ctrlrange(self, actuator_id, u):
-    #     """
-    #     把物理控制量 u 裁剪到该 actuator 的 ctrlrange 内。
-    #     如果该 actuator 没有 ctrlrange（极少数），就不裁剪。
-    #     """
-    #     u = float(u)
-    #     if hasattr(self.sim.model, "actuator_ctrlrange"):
-    #         lo, hi = self.sim.model.actuator_ctrlrange[actuator_id]
-    #         if np.isfinite(lo) and np.isfinite(hi) and (hi > lo):
-    #             u = float(np.clip(u, lo, hi))
-    #     return u
     def _ensure_exo_pd_cache(self):
         """
         确保 PD 需要的缓存都存在：
