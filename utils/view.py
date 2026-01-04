@@ -4,7 +4,7 @@ import os
 
 # 加载你的 XML 文件
 # 因为脚本和 xml 文件在同一个目录下，所以直接写文件名即可
-xml_path = '/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml'
+xml_path = '/home/lvchen/body_SB3/myosuite/lib/python3.10/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml'
 # xml_path = "/home/lvchen/body_SB3_11-7/resources/exo/hip_exo.xml"
 
 if not os.path.exists(xml_path):

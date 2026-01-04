@@ -580,6 +580,7 @@ class VideoRecorderCallback(BaseCallback):
         fmt: str = "mp4",
         box_key: Optional[str] = None,
         verbose: int = 0,
+        seed: int = 0
     ):
         super().__init__(verbose)
         self.env_kwargs = dict(env_kwargs)
@@ -590,16 +591,17 @@ class VideoRecorderCallback(BaseCallback):
         self.fps = int(fps)
         self.fmt = fmt
         self.box_key = box_key
-
         self.last_record_step = 0
         self.record_idx = 0
         self.eval_env = None
+        self.seed = int(seed)
 
     def _init_eval_env(self):
         if self.eval_env is not None:
             return
         print("[VideoRecorder] 创建视频录制环境: WalkEnvV4Multi")
-        self.eval_env = WalkEnvV4Multi(seed=12345, **self.env_kwargs)
+        self.eval_env = WalkEnvV4Multi(seed=self.seed, **self.env_kwargs)
+
 
     def _record_episode(self):
         self._init_eval_env()
@@ -920,14 +922,11 @@ def main():
     rw_all = cfg.get("reward_weights", {}) or {}
     rw_exo = cfg.get("reward_weights_exo", None)
     rw_human = cfg.get("reward_weights_human", None)
-    rw_joint = cfg.get("reward_weights_joint", None)
 
     if mode_tag == "exo":
         rw_src = rw_exo if isinstance(rw_exo, dict) and len(rw_exo) > 0 else rw_all
     elif mode_tag == "human":
         rw_src = rw_human if isinstance(rw_human, dict) and len(rw_human) > 0 else rw_all
-    else:
-        rw_src = rw_joint if isinstance(rw_joint, dict) and len(rw_joint) > 0 else rw_all
 
     reward_weights_used: Dict[str, float] = {}
     if isinstance(rw_src, dict):
@@ -946,7 +945,7 @@ def main():
     # =========================
     ts_dir = datetime.now().strftime("%Y-%m-%d_%H-%M")
 
-    # 你指定的两条根目录（强制使用，不再依赖 YAML 的 train.log_dir）
+    # 指定的两条根目录
     if mode_tag == "exo":
         base_root = Path("/home/lvchen/body_SB3/logs/joint_exo")
     elif mode_tag == "human":
@@ -1197,7 +1196,7 @@ def main():
         video_out_dir = (run_dir / "videos").resolve()
         video_out_dir.mkdir(parents=True, exist_ok=True)
 
-        v_save_freq = int(vtop.get("save_freq", int(tcfg.get("save_frequency", 200_000))))
+        v_save_freq = int(vtop.get("save_freq", int(tcfg.get("video_save_freq", 200_000))))
         v_save_freq = max(v_save_freq // max(num_envs, 1), 1)
 
         box_key = ("exo" if freeze_human else ("human" if freeze_exo else None))
@@ -1206,6 +1205,7 @@ def main():
             VideoRecorderCallback(
                 env_kwargs=env_kwargs,
                 video_cfg=vtop,
+                seed=seed,
                 save_freq=v_save_freq,
                 out_dir=video_out_dir,
                 rollout_length=int(vtop.get("rollout_length", 1000)),

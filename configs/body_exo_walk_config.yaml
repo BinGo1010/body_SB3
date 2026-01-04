@@ -1,7 +1,7 @@
 env:
   model_xml: "/home/lvchen/body_SB3/myosuite/lib/python3.10/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
   obsd_xml:  "/home/lvchen/body_SB3/myosuite/lib/python3.10/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
-  num_envs: 12
+  num_envs: 16
   seed: 4
 
   # 方案 1：冻结 Human
@@ -17,18 +17,17 @@ env:
   exo_deterministic: true # 预测动作时是否采用确定性模式
 
   reset_type: "lyly"
-  target_y_vel: 0.8
+  target_y_vel: 1.2
   hip_period: 62
 
 train:
   total_timesteps: 25000000
-  log_dir: "/home/lvchen/body_SB3/logs"
   save_frequency: 50000
 
   # 续训设置 对应打开 false 一方
-  resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_human_model.zip"
+  resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_model.zip"
   # resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
-  use_vecnormalize: true
+  use_vecnormalize: false
   clip_obs: 10.0
   norm_reward: false
   
@@ -37,7 +36,7 @@ train:
     window_size: 100
 
 info_debug:
-  enable: true
+  enable: false
   log_freq: 1000
   keys:
   - "debug/muscle_mean"
@@ -47,22 +46,22 @@ info_debug:
     
 video:
   video_enabled: true
-  save_freq: 50000
+  video_save_freq: 1600000
   rollout_length: 1000
   fps: 30
   format: "mp4"
   render_size: [640, 480]
   render_camera: 0
-  out_dir: "videos"
+ 
   
-# Human 奖励
+# Human
 reward_weights:
   imit_pose: 0.4
   imit_vel: 0.1
   upright: 0.2
   vel_reward: 0.25
   act_mag: 0.05
-  done: -100.0  
+  done: 0.0  
 # Exo 奖励
   exo_track: 0.0
   exo_load:  0.0     # 权重示例：鼓励省力（越大越省力）
@@ -102,5 +101,5 @@ eval:
 
 wandb:
   wandb_enabled: true
-  project: "myoLegWalk—test"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
-  name: "walkenv_12_25" # 本次实验名字，不写就用时间戳
+  project: "myoLegWalk—NS"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
+  name: "walkenv_1_1-N-1.2" # 本次实验名字，不写就用时间戳
