@@ -62,12 +62,12 @@ train:
 #Kinesis WalkEnvV5
 reward_weights:
     imit_pose: 0.4
-    imit_vel: 0.05
-    upright: 0.05
-    vel_reward: 0.15
-    act_mag: 0.05
+    imit_vel: 0.1
+    upright: 0.2
+    vel_reward: 0.2
+    act_mag: 0.1
     done: 0.0
-    center: 0.3
+    # center: 0.0
 
 # reward_weights:
 #   imit_pose: 6.5
@@ -125,6 +125,6 @@ video:
 wandb:
   wandb_enabled: true
   project: "myoLegWalk—NS"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
-  name: "walkenv_12_28" # 本次实验名字，不写就用时间戳
+  name: "walkenv_1-4_1.2" # 本次实验名字，不写就用时间戳
 
 ################################################################################
