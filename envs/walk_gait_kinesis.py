@@ -447,7 +447,7 @@ class WalkEnvV5(BaseV0):
         """DeepMimic-style joint velocity imitation reward."""
         phase_var = (self.steps / self.hip_period) % 1.0
         phase_next = (phase_var + 1.0 / self.hip_period) % 1.0
-        phase_dot = 50.0 / float(self.hip_period)   # cycle/s
+        phase_dot = 1.0 / (float(self.hip_period) * float(self.dt))
 
         dq_ref = np.array([self.cmu_params.eval_joint_phase_vel(jn, phase_next, phase_dot=phase_dot) for jn in self.imit_joint_names])
         dq_cur = self._get_vel(self.imit_joint_names).astype(np.float32)
