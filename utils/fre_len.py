@@ -83,7 +83,7 @@ def main():
     parser.add_argument(
         "--vel",
         type=float,
-        default=0.8,
+        default=1.6,
         help="目标前向速度 v_target (m/s)，默认 1.2",
     )
     parser.add_argument(
@@ -95,7 +95,7 @@ def main():
     parser.add_argument(
         "--ctrl-freq",
         type=float,
-        default=50.0,
+        default=100.0,
         help="控制频率 f_ctrl (Hz)，默认 50.0",
     )
 

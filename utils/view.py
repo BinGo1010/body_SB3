@@ -18,4 +18,4 @@ else:
         print(f"正在为 '{xml_path}' 启动 MuJoCo Viewer...")
         mujoco.viewer.launch(model, data)
     except Exception as e:
-        print(f"加载或启动模型时出错: {e}") #<!--外骨骼侧展自由度限制-->
+        print(f"加载或启动模型时出错: {e}")

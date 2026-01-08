@@ -152,6 +152,7 @@ class CMUParams:
             "hip_adduction_l": -1.0,
             "hip_rotation_l": 1.0,
             "ankle_angle_l": -1.0,
+            # "subtalar_angle_l": 1.0,
 
             "hip_flexion_r": -1.0,
             "hip_adduction_r": 1.0,

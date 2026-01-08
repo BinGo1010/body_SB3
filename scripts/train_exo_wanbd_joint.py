@@ -13,8 +13,12 @@ import numpy as np
 import torch as th
 import gymnasium as gym
 from gymnasium import spaces
+
+# ---- headless rendering defaults (allow user override) ----
+# 必须在 import mujoco 之前设置，否则离屏渲染可能无法初始化
+os.environ.setdefault("MUJOCO_GL", os.environ.get("MUJOCO_GL", "egl") or "egl")
+
 import mujoco
-import skvideo.io
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor, VecNormalize
@@ -34,7 +38,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from envs.walk_gait_exo import WalkEnvV4Multi
+from envs.walk_gait_exo_joint import WalkEnvV4Multi
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +59,10 @@ def pick_config_path(cli_config: Optional[str]) -> Path:
     env_cfg = os.environ.get("BODY_EXO_WALK_CONFIG", "").strip()
     if env_cfg:
         return Path(env_cfg).expanduser().resolve()
-    p1 = Path("/home/lvchen/body_SB3/configs/body_exo_walk_config.yaml")
+    p1 = Path("/home/lvchen/body_SB3/configs/body_exo_walk_config_joint.yaml")
     if p1.is_file():
         return p1.resolve()
-    return (PROJECT_ROOT / "configs" / "body_exo_walk_config.yaml").resolve()
+    return (PROJECT_ROOT / "configs" / "body_exo_walk_config_joint.yaml").resolve()
 
 
 def set_global_seeds(seed: int):
@@ -530,39 +534,119 @@ class SaveVecNormalizeCallback(BaseCallback):
                 print(f"[train_exo] WARN: VecNormalize.save failed: {repr(e)}")
         return True
 
-def get_frame(env, video_cfg: Dict[str, Any], camera_id=None):
+def _sanitize_frame(frame: np.ndarray) -> np.ndarray:
+    """将渲染输出统一成 uint8 RGB(H,W,3)。"""
+    arr = np.asarray(frame)
+    # RGBA -> RGB
+    if arr.ndim == 3 and arr.shape[-1] == 4:
+        arr = arr[..., :3]
+    # float -> uint8
+    if arr.dtype != np.uint8:
+        mx = float(np.max(arr)) if arr.size else 0.0
+        if mx <= 1.0:
+            arr = (arr * 255.0).clip(0.0, 255.0).astype(np.uint8)
+        else:
+            arr = arr.clip(0.0, 255.0).astype(np.uint8)
+    return arr
+
+
+def get_frame(env, video_cfg: Dict[str, Any], camera_id=None) -> np.ndarray:
+    """
+    从 env 取一帧 RGB 图像（用于视频录制）。
+    优先走 myosuite 的 sim.renderer.render_offscreen；若不可用，则回退到 mujoco.Renderer。
+    """
+    # unwrap（兼容多层 gym wrapper）
     base = env
     for _ in range(10):
         if hasattr(base, "env"):
-            new_base = base.env
-            if new_base is base:
-                break
-            base = new_base
+            base = base.env
         else:
             break
 
     sim = getattr(base, "sim", None)
     if sim is None:
-        raise RuntimeError("无法在环境中找到 sim 对象用于渲染。")
+        raise RuntimeError("无法从 env 获取 sim（用于渲染）。")
 
-    if "render_size" in video_cfg:
-        width, height = video_cfg.get("render_size", [480, 480])
+    render_size = video_cfg.get("render_size", [640, 480])
+    if isinstance(render_size, (list, tuple)) and len(render_size) >= 2:
+        width, height = int(render_size[0]), int(render_size[1])
     else:
-        width = int(video_cfg.get("width", 480))
-        height = int(video_cfg.get("height", 480))
+        width = height = int(render_size) if render_size else 480
 
     if camera_id is None:
-        if "render_camera" in video_cfg:
-            camera_id = int(video_cfg.get("render_camera", 0))
-        else:
-            camera_id = int(video_cfg.get("camera", 0))
+        camera_id = video_cfg.get("render_camera", 0)
+    camera_id = int(camera_id)
 
+    # 1) myosuite renderer（如果存在）
     renderer = getattr(sim, "renderer", None)
-    if renderer is None or (not hasattr(renderer, "render_offscreen")):
-        raise RuntimeError("sim.renderer.render_offscreen 不存在：请确认 myosuite 渲染器已初始化。")
+    if renderer is not None and hasattr(renderer, "render_offscreen"):
+        frame = renderer.render_offscreen(int(width), int(height), camera_id=int(camera_id))
+        return _sanitize_frame(frame)
 
-    frame = renderer.render_offscreen(int(width), int(height), camera_id=int(camera_id))
-    return np.asarray(frame, dtype=np.uint8)
+    # 2) fallback：mujoco.Renderer（只依赖 sim.model/sim.data）
+    model = getattr(sim, "model", None)
+    data = getattr(sim, "data", None)
+    if model is None or data is None:
+        raise RuntimeError("sim.model/sim.data 不存在，无法使用 mujoco.Renderer 离屏渲染。")
+
+    try:
+        mjr = mujoco.Renderer(model, height=int(height), width=int(width))
+        mjr.update_scene(data, camera=camera_id)
+        frame = mjr.render()
+        mjr.close()
+        return _sanitize_frame(frame)
+    except Exception as e:
+        raise RuntimeError(
+            f"离屏渲染失败: {repr(e)}。建议在命令行设置 MUJOCO_GL=egl（或 osmesa），并确保系统支持离屏渲染。"
+        )
+
+
+def write_video(frames: List[np.ndarray], out_path: Path, fps: int = 30) -> Path:
+    """
+    写视频文件：
+      - mp4 优先；若 mp4 写失败自动回退保存 gif（同名 .gif）
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    frames = [_sanitize_frame(f) for f in (frames or [])]
+    if len(frames) == 0:
+        raise RuntimeError("没有帧可写入视频。")
+
+    try:
+        import imageio.v2 as imageio
+    except Exception as e:
+        raise RuntimeError(f"缺少 imageio 依赖，无法写视频: {repr(e)}")
+
+    ext = out_path.suffix.lower()
+    fps = int(fps)
+
+    # gif 直接写
+    if ext == ".gif":
+        imageio.mimsave(str(out_path), frames, fps=fps)
+        return out_path
+
+    # mp4：优先尝试
+    try:
+        writer = imageio.get_writer(str(out_path), fps=fps)
+        try:
+            for f in frames:
+                writer.append_data(f)
+        finally:
+            writer.close()
+        return out_path
+    except Exception as e:
+        # 回退 gif（通常不依赖 ffmpeg）
+        gif_path = out_path.with_suffix(".gif")
+        try:
+            imageio.mimsave(str(gif_path), frames, fps=fps)
+            print(f"[video] mp4 写入失败，已回退保存 gif: {gif_path} | err={repr(e)}")
+            return gif_path
+        except Exception as e2:
+            raise RuntimeError(
+                f"写视频失败（mp4 与 gif 都失败）。mp4 err={repr(e)} ; gif err={repr(e2)}。"
+                f"请确认系统 ffmpeg 或安装 imageio-ffmpeg，并检查 MUJOCO_GL 设置。"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -634,17 +718,10 @@ class VideoRecorderCallback(BaseCallback):
         video_path = self.out_dir / f"walk_step{self.num_timesteps}_idx{self.record_idx}.{self.fmt}"
         print(f"[VideoRecorder] 保存视频: {video_path}")
 
-        if self.fmt.lower() in ["mp4", "gif"]:
-            try:
-                skvideo.io.vwrite(
-                    str(video_path),
-                    np.asarray(frames, dtype=np.uint8),
-                    outputdict={"-r": str(self.fps)},
-                )
-            except Exception as e:
-                print(f"[VideoRecorder] vwrite failed: {repr(e)}")
-        else:
-            print(f"[VideoRecorder] 不支持的视频格式: {self.fmt}")
+        try:
+            write_video(frames, video_path, fps=self.fps)
+        except Exception as e:
+            print(f"[VideoRecorder] 写视频失败: {repr(e)}")
 
     def _on_step(self) -> bool:
         if self.save_freq <= 0:
@@ -872,7 +949,11 @@ def main():
     tcfg = cfg.get("train", {}) or {}
     pcfg = cfg.get("ppo", {}) or {}
     eval_cfg = cfg.get("eval", {}) or {}
+    vcfg = cfg.get("video", {}) or {}
 
+    # -------------------------
+    # 基本参数
+    # -------------------------
     seed = int(args.seed if args.seed is not None else ecfg.get("seed", 4))
     num_envs = int(args.num_envs if args.num_envs is not None else ecfg.get("num_envs", 1))
     total_timesteps = int(args.total_timesteps if args.total_timesteps is not None else tcfg.get("total_timesteps", 2_000_000))
@@ -890,84 +971,89 @@ def main():
     target_y_vel = float(ecfg.get("target_y_vel", 1.2))
     hip_period = int(ecfg.get("hip_period", 100))
 
-    human_pretrained_path = ecfg.get("human_pretrained_path", None)
-    freeze_human = bool(ecfg.get("freeze_human", False))
-    human_policy_device = ecfg.get("human_policy_device", "cpu")
-    human_deterministic = bool(ecfg.get("human_deterministic", True))
+    # “双 True”作为开关：进入间断式联合训练（Interleave）
+    freeze_human_cfg = bool(ecfg.get("freeze_human", False))
+    freeze_exo_cfg = bool(ecfg.get("freeze_exo", False))
+    interleave_enabled = bool(freeze_human_cfg and freeze_exo_cfg)
 
+    human_pretrained_path = ecfg.get("human_pretrained_path", None)
     exo_pretrained_path = ecfg.get("exo_pretrained_path", None)
-    freeze_exo = bool(ecfg.get("freeze_exo", False))
+    human_policy_device = ecfg.get("human_policy_device", "cpu")
     exo_policy_device = ecfg.get("exo_policy_device", "cpu")
+    human_deterministic = bool(ecfg.get("human_deterministic", True))
     exo_deterministic = bool(ecfg.get("exo_deterministic", True))
 
-    if freeze_human and freeze_exo:
-        raise RuntimeError("freeze_human 与 freeze_exo 不能同时为 True")
-    if freeze_human and not human_pretrained_path:
-        raise RuntimeError("freeze_human=True 但未提供 human_pretrained_path")
-    if freeze_exo and not exo_pretrained_path:
-        raise RuntimeError("freeze_exo=True 但未提供 exo_pretrained_path")
-
-    # 训练模式标签
-    if freeze_human:
-        mode_tag = "exo"
-    elif freeze_exo:
-        mode_tag = "human"
+    if interleave_enabled:
+        if not human_pretrained_path:
+            raise RuntimeError("interleave 模式下必须提供 human_pretrained_path（Human 初始/预训练模型）。")
+        if not exo_pretrained_path:
+            raise RuntimeError("interleave 模式下必须提供 exo_pretrained_path（EXO 初始/预训练模型）。")
+        mode_tag = "interleave"
     else:
-        # 两侧都不冻结：联合训练（可选）
-        mode_tag = "joint"
+        # 训练模式标签
+        if freeze_human_cfg:
+            mode_tag = "exo"
+        elif freeze_exo_cfg:
+            mode_tag = "human"
+        else:
+            mode_tag = "joint"
+
+        if freeze_human_cfg and freeze_exo_cfg:
+            raise RuntimeError("freeze_human 与 freeze_exo 不能同时为 True（除非进入 interleave 模式）。")
+        if freeze_human_cfg and not human_pretrained_path:
+            raise RuntimeError("freeze_human=True 但未提供 human_pretrained_path")
+        if freeze_exo_cfg and not exo_pretrained_path:
+            raise RuntimeError("freeze_exo=True 但未提供 exo_pretrained_path")
 
     # =========================
-    # 奖励权重：按训练模式选择，并确保是可序列化的 float dict
-    # 兼容 YAML：reward_weights / reward_weights_exo / reward_weights_human / reward_weights_joint
+    # 奖励权重解析（支持：reward_weights / reward_weights_exo / reward_weights_human / reward_weights_joint）
     # =========================
     rw_all = cfg.get("reward_weights", {}) or {}
     rw_exo = cfg.get("reward_weights_exo", None)
     rw_human = cfg.get("reward_weights_human", None)
     rw_joint = cfg.get("reward_weights_joint", None)
 
-    if mode_tag == "exo":
-        rw_src = rw_exo if isinstance(rw_exo, dict) and len(rw_exo) > 0 else rw_all
-    elif mode_tag == "human":
-        rw_src = rw_human if isinstance(rw_human, dict) and len(rw_human) > 0 else rw_all
-    else:
-        rw_src = rw_joint if isinstance(rw_joint, dict) and len(rw_joint) > 0 else rw_all
+    def pick_reward_weights(tag: str) -> Dict[str, float]:
+        if tag == "exo":
+            rw_src = rw_exo if isinstance(rw_exo, dict) and len(rw_exo) > 0 else rw_all
+        elif tag == "human":
+            rw_src = rw_human if isinstance(rw_human, dict) and len(rw_human) > 0 else rw_all
+        else:
+            rw_src = rw_joint if isinstance(rw_joint, dict) and len(rw_joint) > 0 else rw_all
 
-    reward_weights_used: Dict[str, float] = {}
-    if isinstance(rw_src, dict):
-        for k, v in rw_src.items():
-            try:
-                reward_weights_used[str(k)] = float(v)
-            except Exception:
-                # 兜底：不影响训练，但不把非数值写入 wandb/config
-                pass
-
-    if len(reward_weights_used) == 0:
-        print("[train_exo] WARN: reward_weights 为空或不可解析，将使用环境内部 DEFAULT_RWD_KEYS_AND_WEIGHTS。")
+        out: Dict[str, float] = {}
+        if isinstance(rw_src, dict):
+            for k, v in rw_src.items():
+                try:
+                    out[str(k)] = float(v)
+                except Exception:
+                    pass
+        return out
 
     # =========================
     # 固定根目录 + 时间戳子目录
     # =========================
     ts_dir = datetime.now().strftime("%Y-%m-%d_%H-%M")
-
-    # 你指定的两条根目录（强制使用，不再依赖 YAML 的 train.log_dir）
     if mode_tag == "exo":
         base_root = Path("/home/lvchen/body_SB3/logs/joint_exo")
     elif mode_tag == "human":
         base_root = Path("/home/lvchen/body_SB3/logs/joint_human")
-    else:   
+    elif mode_tag == "interleave":
+        base_root = Path("/home/lvchen/body_SB3/logs/joint_interleave")
+    else:
         base_root = Path("/home/lvchen/body_SB3/logs/joint_both")
 
     run_dir = (base_root / ts_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # run_name 仍可用于打印/区分，但不再参与目录结构（避免重复嵌套）
     run_name = str(tcfg.get("run_name", "exo_joint_run"))
     if not run_name.endswith(f"_{mode_tag}"):
         run_name = f"{run_name}_{mode_tag}"
+
     # -------------------------
-    # W&B init（可选）
+    # W&B init（只做一次）
     # -------------------------
-    wandb_run, wandb_cb, wandb_enabled = init_wandb(
+    wandb_run, _wandb_cb_unused, wandb_enabled = init_wandb(
         cfg=cfg,
         run_dir=run_dir,
         run_name=run_name,
@@ -975,8 +1061,26 @@ def main():
         ts_dir=ts_dir,
     )
 
+    def build_wandb_callback(phase_tag: str) -> Optional[BaseCallback]:
+        """每个 phase 重新创建一个 WandbCallback，避免跨 model 复用同一 callback 的潜在状态残留。"""
+        if not wandb_enabled:
+            return None
+        wcfg = (cfg.get("wandb", {}) or {})
+        try:
+            from wandb.integration.sb3 import WandbCallback  # type: ignore
+            model_save_path = (run_dir / "wandb_models" / phase_tag).resolve()
+            model_save_path.mkdir(parents=True, exist_ok=True)
+            return WandbCallback(
+                model_save_path=str(model_save_path),
+                model_save_freq=int(wcfg.get("model_save_freq", 0)),
+                verbose=int(wcfg.get("verbose", 0)),
+            )
+        except Exception as e:
+            print(f"[train_exo] WARN: build WandbCallback failed: {repr(e)}")
+            return None
+
     # -------------------------
-    # 将“实际使用的奖励权重”写入 W&B config，并把本次运行的配置 YAML 作为 artifact 上传
+    # 保存 config_used.yaml + 上传配置 artifact（可选）
     # -------------------------
     cfg_used_path = (run_dir / "config_used.yaml").resolve()
     try:
@@ -987,22 +1091,21 @@ def main():
     if wandb_enabled and (wandb_run is not None):
         try:
             import wandb as _wandb  # type: ignore
-            # 1) 在 Run 的 config 面板里可直接看到
             _wandb.config.update(
                 {
                     "mode_tag": mode_tag,
                     "timestamp_dir": ts_dir,
-                    "reward_weights": _to_jsonable(reward_weights_used),
+                    "reward_weights_all": _to_jsonable(pick_reward_weights("joint")),
+                    "reward_weights_human": _to_jsonable(pick_reward_weights("human")),
+                    "reward_weights_exo": _to_jsonable(pick_reward_weights("exo")),
                 },
                 allow_val_change=True,
             )
         except Exception as e:
             print(f"[train_exo] WARN: wandb.config.update failed: {repr(e)}")
 
-        # 2) 额外把 YAML 作为 artifact（便于复现实验）
         try:
             import wandb as _wandb  # type: ignore
-            # artifact 名保持稳定，W&B 自动递增版本；用 aliases 记录本次时间戳
             art_cfg = _wandb.Artifact(
                 name=f"run_config_{mode_tag}",
                 type="config",
@@ -1017,12 +1120,376 @@ def main():
         except Exception as e:
             print(f"[train_exo] WARN: log config artifact failed: {repr(e)}")
 
-    # 观测归一化/裁切（续训空间一致性关键）
-    # - clip_obs: VecNormalize 输出裁切范围，且会体现在 env.observation_space 的 low/high 上
-    # - use_vecnormalize: 建议在单侧训练（Box obs）时开启；联合训练（Dict obs）默认不启用
+    # -------------------------
+    # 观测归一化/裁切
+    # -------------------------
     clip_obs = float(tcfg.get("clip_obs", 10.0))
     use_vecnormalize = bool(tcfg.get("use_vecnormalize", False))
     norm_reward = bool(tcfg.get("norm_reward", False))
+
+    # ---------------------------------------------------------------------
+    # Interleave: 交替训练 Human / Exo（同一个 run，重复 n 轮）
+    # ---------------------------------------------------------------------
+    if interleave_enabled:
+        icfg = (tcfg.get("interleave", {}) or {})
+        n_cycles = int(icfg.get("n_cycles", 1))
+        T_h = int(icfg.get("human_steps", 200_000))
+        T_e = int(icfg.get("exo_steps", 200_000))
+
+        video_every = int(vcfg.get("interleave_every_n_cycles", 0))
+        video_do = bool(vcfg.get("video_enabled", True)) and (video_every > 0)
+
+        # 目录：best / checkpoints / vecnormalize
+        best_human_dir = (run_dir / "best_human").resolve(); best_human_dir.mkdir(parents=True, exist_ok=True)
+        best_exo_dir = (run_dir / "best_exo").resolve(); best_exo_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_human_dir = (run_dir / "checkpoints_human").resolve(); ckpt_human_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_exo_dir = (run_dir / "checkpoints_exo").resolve(); ckpt_exo_dir.mkdir(parents=True, exist_ok=True)
+        vecnorm_human_path = str((run_dir / "vecnormalize_human.pkl").resolve())
+        vecnorm_exo_path = str((run_dir / "vecnormalize_exo.pkl").resolve())
+
+        # 初始化 best_model.zip（若不存在，则拷贝预训练模型作为起点）
+        def ensure_best(best_dir: Path, init_zip: str):
+            best_zip = best_dir / "best_model.zip"
+            if best_zip.is_file():
+                return
+            src = Path(init_zip).expanduser().resolve()
+            if not src.is_file():
+                raise RuntimeError(f"初始化 best_model.zip 失败：找不到预训练模型: {src}")
+            shutil.copy2(str(src), str(best_zip))
+            print(f"[interleave] init best_model.zip -> {best_zip}")
+
+        ensure_best(best_human_dir, human_pretrained_path)
+        ensure_best(best_exo_dir, exo_pretrained_path)
+
+        # phase 训练函数
+        def train_phase(
+            phase_tag: str,
+            phase_steps: int,
+            freeze_human: bool,
+            freeze_exo: bool,
+            human_frozen_path: str,
+            exo_frozen_path: str,
+            best_dir: Path,
+            ckpt_dir: Path,
+            vecnorm_save_path: str,
+            reward_tag: str,
+        ) -> None:
+            reward_weights = pick_reward_weights(reward_tag)
+            if len(reward_weights) == 0:
+                print(f"[interleave] WARN: reward_weights_{reward_tag} 为空，将使用环境默认权重。")
+
+            env_kwargs = dict(
+                clip_obs=clip_obs,
+                model_path=model_xml,
+                obsd_model_path=obsd_xml,
+                reset_type=reset_type,
+                target_y_vel=target_y_vel,
+                hip_period=hip_period,
+                human_pretrained_path=str(Path(human_frozen_path).expanduser().resolve()),
+                freeze_human=bool(freeze_human),
+                human_policy_device=human_policy_device,
+                human_deterministic=human_deterministic,
+                exo_pretrained_path=str(Path(exo_frozen_path).expanduser().resolve()),
+                freeze_exo=bool(freeze_exo),
+                exo_policy_device=exo_policy_device,
+                exo_deterministic=exo_deterministic,
+                # 环境侧仅需要区分 human / exo（用于 debug/日志），不携带 cycle 编号
+                interleave_phase=("human" if bool(freeze_exo) else ("exo" if bool(freeze_human) else phase_tag)),
+            )
+            if len(reward_weights) > 0:
+                env_kwargs["weighted_reward_keys"] = reward_weights
+
+            # 本 phase 可重建 VecEnv（满足你的“只创建 1 个环境允许每个 phase 重建 VecEnv”）
+            base_seed = seed
+            if num_envs > 1:
+                env_fns = [make_env(i, base_seed, env_kwargs) for i in range(num_envs)]
+                env = SubprocVecEnv(env_fns)
+            else:
+                env = DummyVecEnv([make_env(0, base_seed, env_kwargs)])
+            env = VecMonitor(env, filename=str(run_dir / f"monitor_train_{phase_tag}.csv"))
+
+            eval_env = DummyVecEnv([make_env(1000, base_seed, env_kwargs)])
+            eval_env = VecMonitor(eval_env, filename=None)
+
+            is_dict_obs = isinstance(env.observation_space, spaces.Dict)
+            if use_vecnormalize and (not is_dict_obs):
+                # interleave：每个 phase 维护各自的 VecNormalize 统计文件
+                stats_path = vecnorm_save_path if Path(vecnorm_save_path).is_file() else None
+                env = maybe_wrap_vecnormalize(env, clip_obs=clip_obs, norm_reward=norm_reward, stats_path=stats_path, training=True)
+                eval_env = maybe_wrap_vecnormalize(eval_env, clip_obs=clip_obs, norm_reward=norm_reward, stats_path=stats_path, training=False)
+            elif use_vecnormalize and is_dict_obs:
+                print(f"[interleave] WARN: phase={phase_tag} 是 Dict obs，已跳过 VecNormalize（建议单侧训练用 Box obs）。")
+
+            sanity_check_env(env, tag=f"train_env_{phase_tag}")
+            sanity_check_env(eval_env, tag=f"eval_env_{phase_tag}")
+
+            # policy 选择
+            is_dict_obs = isinstance(env.observation_space, spaces.Dict)
+            if is_dict_obs:
+                policy_name = "MultiInputPolicy"
+                policy_kwargs = dict(
+                    features_extractor_class=HumanExoExtractor,
+                    features_extractor_kwargs=dict(features_dim=256),
+                    net_arch=dict(pi=[256, 128], vf=[256, 128]),
+                )
+            else:
+                if freeze_exo:
+                    try:
+                        from sb3_lattice_policy import LatticeActorCriticPolicy
+                        policy_name = LatticeActorCriticPolicy
+                        policy_kwargs = dict()
+                        print(f"[interleave] phase={phase_tag} | use LatticeActorCriticPolicy")
+                    except Exception as e:
+                        print(f"[interleave] WARN: import LatticeActorCriticPolicy failed: {repr(e)}; fallback to MlpPolicy")
+                        policy_name = "MlpPolicy"
+                        policy_kwargs = dict(net_arch=dict(pi=[256, 128], vf=[256, 128]))
+                else:
+                    policy_name = "MlpPolicy"
+                    policy_kwargs = dict(net_arch=dict(pi=[256, 128], vf=[256, 128]))
+
+            eval_freq = int(eval_cfg.get("eval_freq", 50_000))
+            n_eval_episodes = int(eval_cfg.get("n_episodes", 5))
+            save_freq = int(tcfg.get("save_frequency", 200_000))
+            eval_freq = max(eval_freq // max(num_envs, 1), 1)
+            save_freq = max(save_freq // max(num_envs, 1), 1)
+
+            # 从上一轮自己的 best_model 继续训练
+            resume_zip = str((best_dir / "best_model.zip").resolve())
+            model = load_resume_ppo(resume_zip, env=env, device=device, pcfg=pcfg)
+            model.tensorboard_log = str(run_dir / "tb")
+
+            callbacks: List[BaseCallback] = []
+            wcb = build_wandb_callback(phase_tag)
+            if wcb is not None:
+                callbacks.append(wcb)
+
+            callbacks.append(
+                EvalCallback(
+                    eval_env,
+                    best_model_save_path=str(best_dir),
+                    log_path=str(run_dir / f"eval_{phase_tag}"),
+                    eval_freq=eval_freq,
+                    n_eval_episodes=n_eval_episodes,
+                    deterministic=bool(eval_cfg.get("deterministic", True)),
+                )
+            )
+            callbacks.append(
+                CheckpointCallback(
+                    save_freq=save_freq,
+                    save_path=str(ckpt_dir),
+                    name_prefix=f"ppo_{phase_tag}",
+                )
+            )
+
+            if use_vecnormalize and (not is_dict_obs):
+                callbacks.append(SaveVecNormalizeCallback(save_freq=save_freq, save_path=vecnorm_save_path, verbose=0))
+
+            rdcfg = (tcfg.get("reward_decompose", {}) or {})
+            if bool(rdcfg.get("enable", True)):
+                callbacks.append(
+                    RewardDecomposeCallback(
+                        window_size=int(rdcfg.get("window_size", 100)),
+                        keys_whitelist=rdcfg.get("keys_whitelist", None),
+                        verbose=0,
+                    )
+                )
+
+            print(
+                f"\n[interleave] >>> phase={phase_tag} | steps={phase_steps} | num_envs={num_envs} | reward_tag={reward_tag}\n"
+                f"            freeze_human={freeze_human} | freeze_exo={freeze_exo}\n"
+                f"            resume={resume_zip}\n"
+                f"            frozen_human={human_frozen_path}\n"
+                f"            frozen_exo  ={exo_frozen_path}\n"
+            )
+
+            model.learn(
+                total_timesteps=int(phase_steps),
+                callback=CallbackList(callbacks),
+                reset_num_timesteps=False,
+                tb_log_name=f"{run_name}_{phase_tag}",
+            )
+
+            # 保存 latest + best alias
+            latest_path = (run_dir / f"latest_{phase_tag}_model.zip").resolve()
+            model.save(str(latest_path))
+
+            best_zip = (best_dir / "best_model.zip").resolve()
+            best_alias = (run_dir / f"best_{phase_tag}_model.zip").resolve()
+            if best_zip.is_file():
+                try:
+                    shutil.copy2(str(best_zip), str(best_alias))
+                except Exception as e:
+                    print(f"[interleave] WARN: copy best model failed: {repr(e)}")
+
+            # 最终保存 VecNormalize 统计（若启用）
+            if isinstance(env, VecNormalize):
+                try:
+                    env.save(vecnorm_save_path)
+                except Exception as e:
+                    print(f"[interleave] WARN: VecNormalize.save failed: {repr(e)}")
+
+            try:
+                env.close(); eval_env.close()
+            except Exception:
+                pass
+
+        # -------------------------
+        # 交替训练 n 轮
+        # -------------------------
+        for cyc in range(1, n_cycles + 1):
+            print(f"\n[interleave] ====== cycle {cyc}/{n_cycles} ======")
+
+            # 1) 训练 Human：冻结 EXO（使用上一轮 best_exo）
+            train_phase(
+                phase_tag=f"human_c{cyc}",
+                phase_steps=T_h,
+                freeze_human=False,
+                freeze_exo=True,
+                human_frozen_path=str((best_human_dir / "best_model.zip").resolve()),
+                exo_frozen_path=str((best_exo_dir / "best_model.zip").resolve()),
+                best_dir=best_human_dir,
+                ckpt_dir=ckpt_human_dir,
+                vecnorm_save_path=vecnorm_human_path,
+                reward_tag="human",
+            )
+
+            # 2) 训练 EXO：冻结 Human（使用上一轮 best_human）
+            train_phase(
+                phase_tag=f"exo_c{cyc}",
+                phase_steps=T_e,
+                freeze_human=True,
+                freeze_exo=False,
+                human_frozen_path=str((best_human_dir / "best_model.zip").resolve()),
+                exo_frozen_path=str((best_exo_dir / "best_model.zip").resolve()),
+                best_dir=best_exo_dir,
+                ckpt_dir=ckpt_exo_dir,
+                vecnorm_save_path=vecnorm_exo_path,
+                reward_tag="exo",
+            )
+
+            # 3) 每 N_video 轮录一次视频（可选）
+            if video_do and (cyc % video_every == 0):
+                try:
+
+                    video_out_dir = (run_dir / "videos" / f"cycle_{cyc:03d}").resolve()
+                    video_out_dir.mkdir(parents=True, exist_ok=True)
+
+                    def _unwrap_base_env(venv):
+                        # VecNormalize -> VecMonitor -> DummyVecEnv/SubprocVecEnv
+                        e = venv
+                        while hasattr(e, "venv"):
+                            e = e.venv
+                        if hasattr(e, "envs") and len(e.envs) > 0:
+                            base = e.envs[0]
+                        else:
+                            base = e
+                        while hasattr(base, "env"):
+                            base = base.env
+                        return base
+
+                    def record_one(model_zip: str, phase_name: str, freeze_human: bool, freeze_exo: bool, box_key: str, vecnorm_stats: Optional[str]):
+                        # 用 VecEnv 以便可选 VecNormalize；渲染时取 base env
+                        env_kwargs = dict(
+                            clip_obs=clip_obs,
+                            model_path=model_xml,
+                            obsd_model_path=obsd_xml,
+                            reset_type=reset_type,
+                            target_y_vel=target_y_vel,
+                            hip_period=hip_period,
+                            human_pretrained_path=str((best_human_dir / "best_model.zip").resolve()),
+                            freeze_human=bool(freeze_human),
+                            human_policy_device=human_policy_device,
+                            human_deterministic=True,
+                            exo_pretrained_path=str((best_exo_dir / "best_model.zip").resolve()),
+                            freeze_exo=bool(freeze_exo),
+                            exo_policy_device=exo_policy_device,
+                            exo_deterministic=True,
+                            interleave_phase=phase_name,
+                        )
+
+                        env = DummyVecEnv([make_env(999, seed, env_kwargs)])
+                        env = VecMonitor(env, filename=None)
+                        if use_vecnormalize and (not isinstance(env.observation_space, spaces.Dict)):
+                            env = maybe_wrap_vecnormalize(env, clip_obs=clip_obs, norm_reward=False, stats_path=vecnorm_stats, training=False)
+
+                        model = load_resume_ppo(model_zip, env=env, device=device, pcfg=pcfg)
+                        obs = env.reset()
+
+                        frames = []
+                        base_env = _unwrap_base_env(env)
+                        rollout_len = int(vcfg.get("rollout_length", 1000))
+
+                        for _ in range(rollout_len):
+                            frames.append(get_frame(base_env, vcfg))
+                            action, _ = model.predict(obs, deterministic=True)
+                            obs, _, dones, _ = env.step(action)
+                            if bool(dones[0]):
+                                break
+
+                        out_path = (video_out_dir / f"{phase_name}.{str(vcfg.get('format', 'mp4'))}").resolve()
+                        write_video(frames, out_path, fps=int(vcfg.get('fps', 30)))
+
+                        try:
+                            env.close()
+                        except Exception:
+                            pass
+
+                    # 录 human / exo 两段
+                    record_one(
+                        model_zip=str((best_human_dir / "best_model.zip").resolve()),
+                        phase_name="human",
+                        freeze_human=False,
+                        freeze_exo=True,
+                        box_key="human",
+                        vecnorm_stats=vecnorm_human_path if (use_vecnormalize and Path(vecnorm_human_path).is_file()) else None,
+                    )
+                    record_one(
+                        model_zip=str((best_exo_dir / "best_model.zip").resolve()),
+                        phase_name="exo",
+                        freeze_human=True,
+                        freeze_exo=False,
+                        box_key="exo",
+                        vecnorm_stats=vecnorm_exo_path if (use_vecnormalize and Path(vecnorm_exo_path).is_file()) else None,
+                    )
+                    print(f"[interleave] video saved under: {video_out_dir}")
+                except Exception as e:
+                    print(f"[interleave] WARN: record video failed: {repr(e)}")
+
+        # cycle 结束：上传 best artifacts（可选）
+        if wandb_enabled and (wandb_run is not None):
+            try:
+                bh = (run_dir / "best_human_model.zip")
+                be = (run_dir / "best_exo_model.zip")
+                if (best_human_dir / "best_model.zip").is_file():
+                    shutil.copy2(str(best_human_dir / "best_model.zip"), str(bh))
+                if (best_exo_dir / "best_model.zip").is_file():
+                    shutil.copy2(str(best_exo_dir / "best_model.zip"), str(be))
+                if bh.is_file():
+                    log_wandb_artifact_best_model(wandb_run, bh, mode_tag="best_human", ts_dir=ts_dir, reward_weights_used=pick_reward_weights("human"), extra_meta={"run_dir": str(run_dir)})
+                if be.is_file():
+                    log_wandb_artifact_best_model(wandb_run, be, mode_tag="best_exo", ts_dir=ts_dir, reward_weights_used=pick_reward_weights("exo"), extra_meta={"run_dir": str(run_dir)})
+            except Exception as e:
+                print(f"[interleave] WARN: upload best artifacts failed: {repr(e)}")
+
+        # wandb finish
+        try:
+            if wandb_enabled and (wandb_run is not None):
+                import wandb as _wandb  # type: ignore
+                _wandb.finish()
+        except Exception as e:
+            print(f"[interleave] WARN: wandb.finish failed: {repr(e)}")
+
+        print(f"[interleave] DONE. run_dir={run_dir}")
+        return
+
+    # ---------------------------------------------------------------------
+    # Non-interleave: 原单模式训练流程
+    # ---------------------------------------------------------------------
+    freeze_human = freeze_human_cfg
+    freeze_exo = freeze_exo_cfg
+    reward_weights_used = pick_reward_weights(mode_tag)
+    if len(reward_weights_used) == 0:
+        print("[train_exo] WARN: reward_weights 为空或不可解析，将使用环境内部 DEFAULT_RWD_KEYS_AND_WEIGHTS。")
 
     env_kwargs = dict(
         clip_obs=clip_obs,
@@ -1039,9 +1506,8 @@ def main():
         freeze_exo=freeze_exo,
         exo_policy_device=exo_policy_device,
         exo_deterministic=exo_deterministic,
+        interleave_phase="none",
     )
-
-    # 将奖励权重注入环境（WalkEnvV4Multi._setup(weighted_reward_keys=...)）
     if len(reward_weights_used) > 0:
         env_kwargs["weighted_reward_keys"] = reward_weights_used
 
@@ -1060,22 +1526,13 @@ def main():
     eval_env = DummyVecEnv([make_env(1000, base_seed, env_kwargs)])
     eval_env = VecMonitor(eval_env, filename=None)
 
-    # Box(obs) 单侧训练：使用 VecNormalize 做归一化，并在归一化后裁切到 ±clip_obs
-    # 说明：VecNormalize 会把 observation_space 的 low/high 也改成 [-clip_obs, clip_obs]，
-    #      这正是 SB3 续训时对齐 observation_space 的关键。
     is_dict_obs = isinstance(env.observation_space, spaces.Dict)
     vecnorm_save_path = str(run_dir / "vecnormalize.pkl")
     vecnorm_stats_path = find_vecnormalize_stats_path(resume_path if is_resume else None, tcfg, mode_tag)
 
     if use_vecnormalize and (not is_dict_obs):
-        env = maybe_wrap_vecnormalize(
-            env, clip_obs=clip_obs, norm_reward=norm_reward,
-            stats_path=vecnorm_stats_path, training=True
-        )
-        eval_env = maybe_wrap_vecnormalize(
-            eval_env, clip_obs=clip_obs, norm_reward=norm_reward,
-            stats_path=vecnorm_stats_path, training=False
-        )
+        env = maybe_wrap_vecnormalize(env, clip_obs=clip_obs, norm_reward=norm_reward, stats_path=vecnorm_stats_path, training=True)
+        eval_env = maybe_wrap_vecnormalize(eval_env, clip_obs=clip_obs, norm_reward=norm_reward, stats_path=vecnorm_stats_path, training=False)
 
     sanity_check_env(env, tag="train_env")
     sanity_check_env(eval_env, tag="eval_env")
@@ -1106,18 +1563,12 @@ def main():
     save_freq = max(save_freq // max(num_envs, 1), 1)
 
     if is_resume:
-        # 继续训练：从已保存 zip 恢复
-        # 注意：恢复的模型必须与当前训练模式一致（动作维度/观测形状一致）
         if freeze_exo:
-            # freeze_exo=True 时可能使用自定义 policy（例如 LatticeActorCriticPolicy）
             try:
                 from sb3_lattice_policy import LatticeActorCriticPolicy  # noqa: F401
             except Exception as e:
                 print(f"[train_exo] WARN: import LatticeActorCriticPolicy failed: {repr(e)}")
-
         model = load_resume_ppo(resume_path, env=env, device=device, pcfg=pcfg)
-
-        # 确保本次运行写入当前 run_dir（TB/CSV）
         model.tensorboard_log = str(run_dir / "tb")
     else:
         model = PPO(
@@ -1140,10 +1591,9 @@ def main():
         )
 
     callbacks: List[BaseCallback] = []
-    # W&B callback：若启用，则将 SB3 日志（含 TensorBoard）同步到 W&B
-    if wandb_enabled and (wandb_cb is not None):
-        callbacks.append(wandb_cb)
-
+    wcb = build_wandb_callback(mode_tag)
+    if wcb is not None:
+        callbacks.append(wcb)
 
     callbacks.append(
         EvalCallback(
@@ -1164,15 +1614,8 @@ def main():
         )
     )
 
-    # VecNormalize 统计保存（仅 Box(obs) 单侧训练时启用）
     if use_vecnormalize and (not is_dict_obs):
-        callbacks.append(
-            SaveVecNormalizeCallback(
-                save_freq=save_freq,
-                save_path=vecnorm_save_path,
-                verbose=0,
-            )
-        )
+        callbacks.append(SaveVecNormalizeCallback(save_freq=save_freq, save_path=vecnorm_save_path, verbose=0))
 
     rdcfg = (tcfg.get("reward_decompose", {}) or {})
     if bool(rdcfg.get("enable", True)):
@@ -1184,37 +1627,21 @@ def main():
             )
         )
 
-    # idcfg = (tcfg.get("info_debug", {}) or {})
-    # if bool(idcfg.get("enable", True)):
-    #     callbacks.append(
-    #         InfoDebugCallback(
-    #             log_freq=int(idcfg.get("log_freq", 1)),
-    #             window_size=int(idcfg.get("window_size", 256)),
-    #             keys=idcfg.get("keys", None),
-    #             verbose=0,
-    #         )
-    #     )
-
     # video：默认放在 <run_dir>/videos/
-    vtop = cfg.get("video", {}) or {}
-    if bool(vtop.get("video_enabled", True)):
-        video_out_dir = (run_dir / "videos").resolve()
-        video_out_dir.mkdir(parents=True, exist_ok=True)
-
-        v_save_freq = int(vtop.get("save_freq", int(tcfg.get("save_frequency", 200_000))))
+    if bool(vcfg.get("video_enabled", True)):
+        video_out_dir = (run_dir / "videos").resolve(); video_out_dir.mkdir(parents=True, exist_ok=True)
+        v_save_freq = int(vcfg.get("save_freq", int(tcfg.get("save_frequency", 200_000))))
         v_save_freq = max(v_save_freq // max(num_envs, 1), 1)
-
         box_key = ("exo" if freeze_human else ("human" if freeze_exo else None))
-
         callbacks.append(
             VideoRecorderCallback(
                 env_kwargs=env_kwargs,
-                video_cfg=vtop,
+                video_cfg=vcfg,
                 save_freq=v_save_freq,
                 out_dir=video_out_dir,
-                rollout_length=int(vtop.get("rollout_length", 1000)),
-                fps=int(vtop.get("fps", 30)),
-                fmt=str(vtop.get("format", "mp4")),
+                rollout_length=int(vcfg.get("rollout_length", 1000)),
+                fps=int(vcfg.get("fps", 30)),
+                fmt=str(vcfg.get("format", "mp4")),
                 box_key=box_key,
                 verbose=1,
             )
@@ -1226,16 +1653,10 @@ def main():
     )
     print("[train_exo] callbacks:", [type(c).__name__ for c in callbacks])
 
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=CallbackList(callbacks),
-        reset_num_timesteps=(not is_resume),
-        tb_log_name=run_name,
-    )
+    model.learn(total_timesteps=total_timesteps, callback=CallbackList(callbacks), reset_num_timesteps=(not is_resume), tb_log_name=run_name)
 
-    final_path = run_dir / f"final_{mode_tag}_model.zip"
+    final_path = (run_dir / f"final_{mode_tag}_model.zip").resolve()
     model.save(str(final_path))
-    # 最终保存 VecNormalize 统计（若启用）
     if isinstance(env, VecNormalize):
         try:
             env.save(vecnorm_save_path)
@@ -1247,16 +1668,13 @@ def main():
 
     best_zip = (run_dir / f"best_model_{mode_tag}" / "best_model.zip")
     if best_zip.is_file():
-        best_alias = run_dir / f"best_{mode_tag}_model.zip"
+        best_alias = (run_dir / f"best_{mode_tag}_model.zip").resolve()
         try:
             shutil.copy2(str(best_zip), str(best_alias))
             print(f"[OK] Best model copied to: {best_alias}")
         except Exception as e:
             print(f"[train_exo] WARN: copy best model failed: {repr(e)}")
 
-    # -------------------------
-    # W&B Artifacts：上传 best model（优先 best_alias，其次 best_zip，最后退化为 final）
-    # -------------------------
     if wandb_enabled and (wandb_run is not None):
         try:
             cand = None
@@ -1267,25 +1685,12 @@ def main():
                 cand = best_zip
             elif final_path.is_file():
                 cand = final_path
-
             if cand is not None:
-                log_wandb_artifact_best_model(
-                    wandb_run=wandb_run,
-                    best_model_path=cand,
-                    mode_tag=mode_tag,
-                    ts_dir=ts_dir,
-                    reward_weights_used=reward_weights_used,
-                    extra_meta={"run_dir": str(run_dir)},
-                )
+                log_wandb_artifact_best_model(wandb_run, cand, mode_tag=mode_tag, ts_dir=ts_dir, reward_weights_used=reward_weights_used, extra_meta={"run_dir": str(run_dir)})
                 print(f"[train_exo] wandb artifact uploaded: {cand}")
-            else:
-                print("[train_exo] WARN: no model file found for wandb artifact.")
         except Exception as e:
             print(f"[train_exo] WARN: upload best model artifact failed: {repr(e)}")
 
-    # -------------------------
-    # W&B finish（可选）
-    # -------------------------
     try:
         if wandb_enabled and (wandb_run is not None):
             import wandb as _wandb  # type: ignore
@@ -1293,8 +1698,6 @@ def main():
             print("[train_exo] wandb finished.")
     except Exception as e:
         print(f"[train_exo] WARN: wandb.finish failed: {repr(e)}")
-
-
 
 
 if __name__ == "__main__":

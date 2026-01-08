@@ -1,17 +1,20 @@
 env:
   model_xml: "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
   obsd_xml:  "/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml"
-  num_envs: 8
+  num_envs: 1
   seed: 4
 
-  # 方案 1：冻结 Human
-  freeze_human: true # ❌ 禁止同时为 true  false
+  # 训练模式开关：
+  # - freeze_human=true,  freeze_exo=false  -> 只训练 EXO（冻结 Human）
+  # - freeze_human=false, freeze_exo=true   -> 只训练 Human（冻结 EXO）
+  # - freeze_human=true,  freeze_exo=true   -> 间断式联合训练（交替训练 Human/EXO）
+  freeze_human: true
   human_pretrained_path: "/home/lvchen/body_SB3/logs/joint_human/best_model.zip"
   human_policy_device: "cpu"
   human_deterministic: true # 预测动作时是否采用确定性模式
 
   # 方案 2：冻结 EXO
-  freeze_exo: false
+  freeze_exo: true
   exo_pretrained_path: "/home/lvchen/body_SB3/logs/joint_exo/best_model.zip"
   exo_policy_device: "cpu"
   exo_deterministic: true # 预测动作时是否采用确定性模式
@@ -21,20 +24,29 @@ env:
   hip_period: 62
 
 train:
+  # 非间断式模式下使用 total_timesteps；
+  # 间断式模式下由 train.interleave.{human_steps, exo_steps, n_cycles} 控制。
   total_timesteps: 25000000
   log_dir: "/home/lvchen/body_SB3/logs"
   save_frequency: 100000
 
+  # 间断式联合训练：交替训练 Human / EXO，循环 n_cycles 轮
+  # 触发条件：env.freeze_human=true 且 env.freeze_exo=true
+  interleave:
+    n_cycles: 16
+    human_steps: 10000    # 每轮训练 Human 的步数（timesteps）
+    exo_steps: 30000    # 每轮训练 EXO 的步数（timesteps）
+
   # 续训设置 对应 false 一方
   # resume_path: "/home/lvchen/body_SB3/logs/joint_human/best_model.zip"
   # resume_path: "/home/lvchen/body_SB3/logs/joint_human/40sec/best_human_model.zip"
-  resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_model_1_4.zip" #选型有影响
+  # resume_path: "/home/lvchen/body_SB3/logs/joint_exo/best_exo_model.zip" #选型有影响
 
   use_vecnormalize: false
   clip_obs: 10.0
   norm_reward: false
   imit_pose_log_enabled: false
-  
+
   reward_decompose:
     enable: true
     window_size: 100
@@ -47,10 +59,14 @@ info_debug:
   - "debug/muscle_std"
   - "debug/tau_L"
   - "debug/tau_R"
+  - "debug/interleave_phase_id"
+  - "debug/interleave_phase"
     
 video:
   video_enabled: true
-  save_freq: 80000
+  save_freq: 5000
+  # 间断式联合训练：每 interleave_every_n_cycles 轮录一次（0 表示关闭）
+  interleave_every_n_cycles: 4
   rollout_length: 1000
   fps: 30
   format: "mp4"
@@ -58,36 +74,20 @@ video:
   render_camera: 0
   out_dir: "videos"
   
-# Human 奖励
-# reward_weights:
-#   imit_pose: 0.4
-#   imit_vel: 0.1
-#   upright: 0.2
-#   vel_reward: 0.2
-#   act_mag: 0.1
-#   done: -100.0  
-# # Exo 奖励
-#   exo_track: 0.0
-#   exo_load:  0.0     # 权重示例：鼓励省力（越大越省力）
-#   exo_smooth: 0.0
-  
-
-# exo
 reward_weights:
-  # Human 奖励
   imit_pose: 0.3
   imit_vel: 0.1
   upright: 0.1
   vel_reward: 0.1
+  done: -100.0
+
   act_mag: 0.6
-  done: -100.0  
-  # Exo 奖励
-  exo_track: 0.6
-  # exo_load:  0.1     # 权重示例：鼓励省力（越大越省力）
-  exo_power: 0.2
-  exo_smooth: 0.0     #一直是1
 
-
+  exo_track: 0.3
+  # exo_load: 0.1
+  exo_smooth: 0.1
+  exo_power: 0.4
+  
 ppo:
   learning_rate: 0.0003
   # 减小 batch_size 与 n_steps 以降低每次训练计算中分布构造时的显存峰值
@@ -101,12 +101,12 @@ ppo:
   clip_range: 0.2
 
 eval:
-  eval_freq: 50000  
+  eval_freq: 5000  
   n_episodes: 5
   deterministic: true # 是否加入噪声评估
 
 wandb:
   wandb_enabled: true
-  project: "myoLegWalk—NS"
+  project: "myoLegWalk—NSF"
   # project: "myoLegWalk—test"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
-  name: "walkenv_1_4-EXO" # 本次实验名字，不写就用时间戳
+  name: "walkenv_1_7-Jonit" # 本次实验名字，不写就用时间戳

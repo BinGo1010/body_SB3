@@ -210,8 +210,8 @@ class HipAngleCPG:
     """与 HipTorqueCPG 相同的状态更新/相位耦合，但输出为髋关节**角度轨迹**(q_des, dq_des)。
 
     输出：
-      q_des  : [q_L, q_R]  (rad)
-      dq_des : [dq_L, dq_R] (rad/s)
+      q_des  : [q_L, q_R]  (度)
+      dq_des : [dq_L, dq_R] (度/s)
 
     说明：
     - 仍使用参数文件中的傅里叶基函数 base(phi)，并以 a0 为中心值得到零均值形状：
@@ -230,6 +230,7 @@ class HipAngleCPG:
         self.p = params
         self.dt = float(dt)
         self.S_hip = int(S_hip)
+        
 
         # 相位
         self.phi_L = float(phase0)
@@ -237,8 +238,8 @@ class HipAngleCPG:
 
         # 频率/尺度（单位由外部约定：omega 为 rad/s；amp、offset 为 rad）
         self.omega = 6.0  # rad/s, 约 1Hz
-        self.amp = np.array([0.2, 0.2], dtype=float)      # rad
-        self.offset = np.array([0.0, 0.0], dtype=float)   # rad
+        self.amp = np.array([1.0, 1.0], dtype=float)      # rad
+        self.offset = np.array([0, 0], dtype=float)   # rad
 
         # 二阶跟踪器状态（同 HipTorqueCPG）
         self.omega_x = 0.0
@@ -255,7 +256,7 @@ class HipAngleCPG:
         self.amp_zeta = 1.0
         self.offset_wn = 8.0
         self.offset_zeta = 1.0
-
+        self.phase_bias = 0.1525  # cycle
         # 相位耦合（左右锁相）
         self.k_couple = 10.0
 
@@ -319,10 +320,18 @@ class HipAngleCPG:
         # 4) 角度轨迹 q_des / dq_des
         center = self.p.hip_a0
 
-        base_L = self.hip_fourier(self.phi_L)
-        base_R = self.hip_fourier(self.phi_R)
-        dbase_L = self.hip_fourier_dphi(self.phi_L)
-        dbase_R = self.hip_fourier_dphi(self.phi_R)
+        # 用 cycle 表示的相位偏置（推荐外部设置 self.phase_bias = 0.152）
+        phi_bias = 2.0 * np.pi * float(self.phase_bias)
+
+        # 若你的 Δ* 定义为 “phase -> phase + Δ”，用 +；否则用 -
+        phiL_eff = (self.phi_L + phi_bias) % (2.0 * np.pi)
+        phiR_eff = (self.phi_R + phi_bias) % (2.0 * np.pi)
+
+        base_L = self.hip_fourier(phiL_eff)
+        base_R = self.hip_fourier(phiR_eff)
+        dbase_L = self.hip_fourier_dphi(phiL_eff)
+        dbase_R = self.hip_fourier_dphi(phiR_eff)
+
 
         shape_L = base_L - center
         shape_R = base_R - center
@@ -341,4 +350,6 @@ class HipAngleCPG:
             "offset": self.offset.copy(),
             "phi": np.array([self.phi_L, self.phi_R], dtype=float),
             "phidot": np.array([phidot_L, phidot_R], dtype=float),
+            "delta": float(delta),
+            "k_couple": float(self.k_couple),
         }

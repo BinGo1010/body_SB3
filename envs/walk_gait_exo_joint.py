@@ -129,7 +129,7 @@ class WalkEnvV4Multi(BaseV0):
         'muscle_length',
         'muscle_velocity',
         'muscle_force', 
-        # feet_contacts没有加入
+        
         # imitation 
         'phase_var',
 
@@ -200,6 +200,8 @@ class WalkEnvV4Multi(BaseV0):
                 freeze_exo: bool = False,
                 exo_policy_device: str = "cpu",
                 exo_deterministic: bool = True,
+                # ====== Interleave training phase tag (optional, for logging/debug) ======
+                interleave_phase: str = "none",
                **kwargs):
         
         self.exo_state_nq = int(kwargs.pop("exo_state_nq", 4))   # exo 在 qpos 上占多少维（默认4）
@@ -213,6 +215,16 @@ class WalkEnvV4Multi(BaseV0):
         self.target_y_vel = target_y_vel
         self.target_rot = target_rot
         self.steps = 0
+
+        # 仅用于“间断式联合训练”中区分当前 phase（不影响动力学/控制）
+        self.interleave_phase = str(interleave_phase or "none")
+        _ph = self.interleave_phase.lower()
+        if _ph in ("human", "h"):
+            self.interleave_phase_id = 1
+        elif _ph in ("exo", "e"):
+            self.interleave_phase_id = 2
+        else:
+            self.interleave_phase_id = 0
 
         # --- 12 DOF CMU mocap 傅立叶参数，用相位驱动 ---
         self.cmu_params = CMUParams(csv_path=CSV_PATH)
@@ -545,11 +557,18 @@ class WalkEnvV4Multi(BaseV0):
             ('done', done),
         ))
 
-        # 计算综合奖励（由 YAML 中的权重加权）
-        rwd_dict['dense'] = np.sum(
-            [wt * rwd_dict[key] for key, wt in self.rwd_keys_wt.items()],
-            axis=0
-        )
+        # 若在训练 Human（freeze_exo=True），显式屏蔽 exo_* 奖励，避免误加入 dense
+        if bool(getattr(self, "freeze_exo", False)):
+            for k in list(rwd_dict.keys()):
+                if str(k).startswith("exo_"):
+                    rwd_dict[k] = 0.0
+
+        # 计算综合奖励（由 YAML 中的权重加权；仅对存在的 key 求和，避免 KeyError）
+        dense = 0.0
+        for key, wt in getattr(self, "rwd_keys_wt", {}).items():
+            if key in rwd_dict and float(wt) != 0.0:
+                dense += float(wt) * float(rwd_dict[key])
+        rwd_dict["dense"] = dense
         return rwd_dict
     
     def get_randomized_initial_state(self):
@@ -602,9 +621,9 @@ class WalkEnvV4Multi(BaseV0):
         # code that expects mapping obs[key] works correctly.
         self.exo_cpg.reset()
         # -------------- reset：初始化外骨骼 CPG 参数状态（用于Δ形式）--------------
-        self.exo_f_min, self.exo_f_max = 0.6, 1.4          # Hz
-        self.exo_amp_min, self.exo_amp_max = 0.2, 1.0      # rad
-        self.exo_off_min, self.exo_off_max = -0.6, 0.6     # rad
+        self.exo_f_min, self.exo_f_max = 1.2, 1.8          # Hz
+        self.exo_amp_min, self.exo_amp_max = 0.8, 1.2      # rad
+        self.exo_off_min, self.exo_off_max = -0.4, 0.4     # rad
 
         # 初值：频率取中值，幅值取中值，偏置取 0（你也可改成中值）
         self._exo_f_hz = 0.5 * (self.exo_f_min + self.exo_f_max)
@@ -612,18 +631,16 @@ class WalkEnvV4Multi(BaseV0):
         self._exo_off  = np.zeros(2, dtype=np.float32)
 
         # Δ更新的“每步最大改变量”（可从 yaml 读，也可先硬编码）
-        self.exo_df_max   = float(getattr(self, "exo_df_max", 0.03))   # Hz / step
+        self.exo_df_max   = float(getattr(self, "exo_df_max", 0.02))   # Hz / step
         self.exo_damp_max = float(getattr(self, "exo_damp_max", 0.02)) # rad / step
-        self.exo_doff_max = float(getattr(self, "exo_doff_max", 0.03)) # rad / step
+        self.exo_doff_max = float(getattr(self, "exo_doff_max", 0.02)) # rad / step
 
         # 可选：参数更新低通（0~1，越小越平滑；先用 0.2~0.5）
         self.exo_param_alpha = float(getattr(self, "exo_param_alpha", 0.35))
 
         # 默认：RL 输出按 Δ 解释；若 freeze_exo=True 用旧策略（绝对值），可设 False
         self.exo_action_is_delta = bool(getattr(self, "exo_action_is_delta", True))
-
         self.last_muscle_cmd = np.zeros(self.n_muscle_act, dtype=float)
-
         # Return (obs, info) to follow Gymnasium API. VecEnv wrappers
         # (stable-baselines3 DummyVecEnv) expect a 2-tuple so they can
                 # 更新 reset 时的 root 平面参考点（用于 _get_vel_reward 的轨迹跟踪）
@@ -1044,53 +1061,6 @@ class WalkEnvV4Multi(BaseV0):
         J = (tau_L / tau_scale) ** 2 + (tau_R / tau_scale) ** 2
         return float(np.exp(-sigma_tau * J))
     
-    # def _get_exo_power_reward(
-    #     self,
-    #     P_scale: float = 250.0,
-    #     k_sigmoid: float = 6.0,
-    #     eps: float = 1e-6,
-    #     mode: str = "sigmoid",  # "hard" / "deadzone" / "sigmoid"
-    # ) -> float:
-    #     """
-    #     EXO 正功奖励：基于两侧髋电机功率 P = tau * dq 判断助力/阻碍，并归一化到 (0,1)。
-
-    #     - P > 0: 注入功率（奖励接近1）
-    #     - P < 0: 吸收功率/阻碍（奖励接近0）
-
-    #     参数:
-    #     P_scale: 功率归一化尺度(W)。典型：tau~100Nm, dq~2-3rad/s => 200~300W
-    #     k_sigmoid: sigmoid陡峭度，越大越接近硬判别
-    #     eps: 死区阈值，避免数值噪声导致频繁翻转
-    #     mode:
-    #         - "hard": P>eps =>1, else 0
-    #         - "deadzone": P>eps =>1, P<-eps =>0, else 0.5
-    #         - "sigmoid": r = sigmoid(k * (P/P_scale))，平滑且稳定（推荐）
-    #     """
-    #     self._ensure_exo_pd_cache()
-
-    #     # 1) 实际施加扭矩（更建议用 actuator_force）
-    #     tau = np.asarray(self.sim.data.actuator_force[self.exo_hip_ids], dtype=np.float32).ravel()  # [tau_L, tau_R]
-    #     # 2) 关节角速度
-    #     dq = np.array([
-    #         float(self.sim.data.qvel[self.exo_hip_dadr[0]]),
-    #         float(self.sim.data.qvel[self.exo_hip_dadr[1]]),
-    #     ], dtype=np.float32)
-
-    #     # 3) 机械功率（W）
-    #     P = tau * dq  # [P_L, P_R]
-
-    #     if mode == "hard":
-    #         r_each = (P > eps).astype(np.float32)  # {0,1}
-    #     elif mode == "deadzone":
-    #         r_each = np.where(P > eps, 1.0, np.where(P < -eps, 0.0, 0.5)).astype(np.float32)
-    #     else:
-    #         # 平滑：sigmoid(P/P_scale) -> (0,1)
-    #         Pn = np.clip(P / max(P_scale, 1e-6), -10.0, 10.0)
-    #         r_each = 1.0 / (1.0 + np.exp(-k_sigmoid * Pn))
-
-    #     return float(np.mean(r_each))
-
-
     def _get_exo_power_reward_soft(
         self,
         P_scale: float = 100.0,      # W，功率归一化尺度
@@ -1116,7 +1086,6 @@ class WalkEnvV4Multi(BaseV0):
 
         r = rP * g
         return float(np.mean(r))
-
 # ========== Human policy helpers ==========
 
     def _load_human_policy_if_needed(self):
@@ -1282,6 +1251,7 @@ class WalkEnvV4Multi(BaseV0):
             "debug/tau_R":       float("nan"),
             "debug/human_policy_used": int(bool(getattr(self, "freeze_human", False))),
             "debug/exo_policy_used":   int(bool(getattr(self, "freeze_exo", False))),
+            "debug/interleave_phase_id": int(getattr(self, "interleave_phase_id", 0)),
         }
 
         n_m = int(self.n_muscle_act)
@@ -1341,14 +1311,14 @@ class WalkEnvV4Multi(BaseV0):
         # 缓存一下（便于日志/奖励扩展）
         self.last_muscle_cmd = np.asarray(muscle_cmd, dtype=float).copy()
 
-        # ========== 2) [-1,1] → Δ更新（外骨骼 CPG 参数） ==========
+        # ========== 2) [-1,1] → 物理区间（外骨骼 CPG 参数） ==========
         # 边界（优先用 reset 初始化的；没有就回退）
         f_min  = float(getattr(self, "exo_f_min", 1.2))
         f_max  = float(getattr(self, "exo_f_max", 1.8))
         amp_min = float(getattr(self, "exo_amp_min", 0.8))
         amp_max = float(getattr(self, "exo_amp_max", 1.2))
-        off_min = float(getattr(self, "exo_off_min", -0.4))
-        off_max = float(getattr(self, "exo_off_max", 0.4))
+        off_min = float(getattr(self, "exo_off_min", 0.0))
+        off_max = float(getattr(self, "exo_off_max", 0.6))
 
         # 若首次进入 step 尚未初始化（保险）
         if not hasattr(self, "_exo_f_hz"):
@@ -1359,16 +1329,15 @@ class WalkEnvV4Multi(BaseV0):
             self._exo_off = np.zeros(2, dtype=np.float32)
 
         # Δ步长与低通
-        df_max   = float(getattr(self, "exo_df_max", 0.03))    # Hz/step
-        damp_max = float(getattr(self, "exo_damp_max", 0.02))  # rad/step
-        doff_max = float(getattr(self, "exo_doff_max", 0.03))  # rad/step
-        alpha    = float(getattr(self, "exo_param_alpha", 0.35))
+        df_max   = float(getattr(self, "exo_df_max", 0.005))    # Hz/step
+        damp_max = float(getattr(self, "exo_damp_max", 0.005))  # rad/step
+        doff_max = float(getattr(self, "exo_doff_max", 0.005))  # rad/step
+        alpha    = float(getattr(self, "exo_param_alpha", 0.7))
 
         # 是否按Δ解释（默认：训练外骨骼时用Δ；freeze_exo=True 的旧策略可改回绝对）
+        # 统一语义：无论 freeze_exo / freeze_human / eval，始终按 Δ 解释
         is_delta = bool(getattr(self, "exo_action_is_delta", True))
-        if bool(getattr(self, "freeze_exo", False)):
-            # 外骨骼冻结时，exo_act 来自旧 exo_policy，通常是“绝对值语义”
-            is_delta = bool(getattr(self, "exo_policy_outputs_delta", False))
+
 
         if is_delta:
             # 1) 计算物理量增量
@@ -1419,46 +1388,6 @@ class WalkEnvV4Multi(BaseV0):
             amp_target=amp_target,
             offset_target=offset_target,
         )
-        # # ---- 追加：把 CPG 内部“滤波后真正生效”的参数写入 debug/info ----
-        # omega_used = float(cpg_out.get("omega", Omega_target))   # rad/s
-        # amp_used   = np.asarray(cpg_out.get("amp", amp_target), dtype=float).ravel()
-        # off_used   = np.asarray(cpg_out.get("offset", offset_target), dtype=float).ravel()
-        # phi_used   = np.asarray(cpg_out.get("phi", [np.nan, np.nan]), dtype=float).ravel()
-        # phidot_used = np.asarray(cpg_out.get("phidot", [np.nan, np.nan]), dtype=float).ravel()  
-        # delta_used = float(cpg_out.get("delta", np.nan))
-        # k_couple_used = float(cpg_out.get("k_couple", np.nan))
-        # phi = np.asarray(cpg_out.get("phi", [np.nan, np.nan]), dtype=float).ravel()
-
-        # # 相位差（mod 2π），范围 [0, 2π)
-        # diff_mod = (phi[1] - phi[0]) % (2.0 * np.pi)
-
-        # # 相位差相对 π 的误差（wrap 到 [-π, π]）
-        # err = diff_mod - np.pi
-        # err = (err + np.pi) % (2.0 * np.pi) - np.pi
-
-        # self._debug_cache["debug/cpg_phase_diff_mod"] = float(diff_mod)
-        # self._debug_cache["debug/cpg_phase_err"]      = float(err)
-
-        # # 额外：直接看内部状态是否一致（排除“返回phi被处理”）
-        # try:
-        #     phi_internal = np.asarray(getattr(self.exo_cpg, "phi"), dtype=float).ravel()
-        #     self._debug_cache["debug/cpg_phi_int_L"] = float(phi_internal[0])
-        #     self._debug_cache["debug/cpg_phi_int_R"] = float(phi_internal[1])
-        # except Exception:
-        #     pass
-        # self._debug_cache["debug/cpg_omega"] = omega_used
-        # self._debug_cache["debug/cpg_amp_L"] = float(amp_used[0])
-        # self._debug_cache["debug/cpg_amp_R"] = float(amp_used[1])
-        # self._debug_cache["debug/cpg_off_L"] = float(off_used[0])
-        # self._debug_cache["debug/cpg_off_R"] = float(off_used[1])
-        # self._debug_cache["debug/cpg_phi_L"] = float(phi_used[0])
-        # self._debug_cache["debug/cpg_phi_R"] = float(phi_used[1])
-        # self._debug_cache["debug/cpg_phidot_L"] = float(phidot_used[0])
-        # self._debug_cache["debug/cpg_phidot_R"] = float(phidot_used[1])
-        # self._debug_cache["debug/cpg_delta"] = delta_used
-        # self._debug_cache["debug/cpg_k_couple"] = k_couple_used 
-
-
         q_des_L, q_des_R = cpg_out["q_des"]
         dq_des_L, dq_des_R = cpg_out["dq_des"]
 
