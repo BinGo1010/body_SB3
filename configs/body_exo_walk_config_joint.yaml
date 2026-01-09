@@ -83,7 +83,7 @@ reward_weights:
 
   act_mag: 0.6
 
-  exo_track: 0.3
+  exo_track: 0.0
   # exo_load: 0.1
   exo_smooth: 0.1
   exo_power: 0.4

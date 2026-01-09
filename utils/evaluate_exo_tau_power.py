@@ -373,8 +373,8 @@ def make_env(args):
 def main():
     parser = argparse.ArgumentParser()
     # --- 模型/环境默认路径（按你提供的） ---
-    parser.add_argument("--human_model", type=str, default="/home/lvchen/body_SB3/logs/eval/best_human_model")
-    parser.add_argument("--exo_model",   type=str, default="/home/lvchen/body_SB3/logs/eval/best_exo_model")
+    parser.add_argument("--human_model", type=str, default="/home/lvchen/body_SB3/logs/eval/latest_human_c32_model")
+    parser.add_argument("--exo_model",   type=str, default="/home/lvchen/body_SB3/logs/eval/latest_exo_c32_model")
     parser.add_argument("--model_xml",   type=str, default="/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml")
 
     # 环境参数

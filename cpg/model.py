@@ -252,11 +252,19 @@ class HipAngleCPG:
         # 跟踪器参数（可按需调整）
         self.omega_wn = 8.0
         self.omega_zeta = 1.0
+
         self.amp_wn = 8.0
         self.amp_zeta = 1.0
+
         self.offset_wn = 8.0
         self.offset_zeta = 1.0
-        self.phase_bias = 0.1525  # cycle
+
+        self.phase_bias_wn = 8.0
+        self.phase_bias_zeta = 1.0
+
+        self.phase_bias = 0.425  # cycle 0.1525+0.25(rad)
+        self.phase_bias_dx = 0.0       # 若用二阶跟踪
+
         # 相位耦合（左右锁相）
         self.k_couple = 10.0
 
@@ -289,7 +297,7 @@ class HipAngleCPG:
         l = np.arange(1, S + 1, dtype=float)
         return float(np.sum((-l) * a * np.sin(l * phi) + (l) * b * np.cos(l * phi)))
 
-    def step(self, Omega_target, amp_target, offset_target):
+    def step(self, Omega_target, amp_target, offset_target, phase_bias_target):
         # 1) 二阶跟踪：omega/amp/offset
         self.omega, self.omega_dx = self._track2(
             self.omega, self.omega_dx, float(Omega_target), self.omega_wn, self.omega_zeta
@@ -305,7 +313,10 @@ class HipAngleCPG:
             self.offset[i], self.offset_dx[i] = self._track2(
                 self.offset[i], self.offset_dx[i], float(offset_target[i]), self.offset_wn, self.offset_zeta
             )
-
+        # 相位偏置二阶跟踪
+        self.phase_bias, self.phase_bias_dx = self._track2(
+            self.phase_bias, self.phase_bias_dx, float(phase_bias_target), self.phase_bias_wn, self.phase_bias_zeta
+        )
         # 2) 相位耦合（锁相到 pi）
         delta = (self.phi_R - self.phi_L) - np.pi
         delta = (delta + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
@@ -321,6 +332,7 @@ class HipAngleCPG:
         center = self.p.hip_a0
 
         # 用 cycle 表示的相位偏置（推荐外部设置 self.phase_bias = 0.152）
+
         phi_bias = 2.0 * np.pi * float(self.phase_bias)
 
         # 若你的 Δ* 定义为 “phase -> phase + Δ”，用 +；否则用 -
