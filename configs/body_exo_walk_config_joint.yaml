@@ -66,7 +66,7 @@ video:
   video_enabled: true
   save_freq: 5000
   # 间断式联合训练：每 interleave_every_n_cycles 轮录一次（0 表示关闭）
-  interleave_every_n_cycles: 4
+  interleave_every_n_cycles: 2
   rollout_length: 1000
   fps: 30
   format: "mp4"
@@ -76,17 +76,17 @@ video:
   
 reward_weights:
   imit_pose: 0.3
-  imit_vel: 0.1
+  imit_vel: 0.0
   upright: 0.1
   vel_reward: 0.1
-  done: -100.0
+  done: 0.0
 
-  act_mag: 0.6
+  act_mag: 0.3
 
   exo_track: 0.0
-  exo_load: 0.1
-  exo_smooth: 0.1
-  exo_power: 0.4
+  # exo_load: 0.1
+  exo_smooth: 0.2
+  exo_power: 1.0
   
 ppo:
   learning_rate: 0.0003

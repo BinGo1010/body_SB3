@@ -5,13 +5,8 @@ eval_human_exo_sensors_video.py
 在同一环境中同时加载 human 与 exo 的 SB3 策略进行推理，
 并读取 MuJoCo sensor：EXO 左右髋关节角度/角速度/执行器力矩，输出时域曲线 + CSV + 可选视频。
 
-默认路径已按你提供的信息填好，尽量做到开箱即用。
-你只需要保证：
-1) 你的 myolegs.xml 里确实包含这些 sensor 与 actuator 名称；
-2) 环境 step() 支持拼接动作（human 在前、exo 在末尾）或 Dict 动作。
-
-依赖：
-  pip install stable-baselines3 matplotlib pyyaml imageio
+[修改说明]：
+已加入动态调整图片宽度的逻辑，解决 max_steps 较大时曲线挤压看不清的问题。
 """
 
 import os
@@ -32,6 +27,7 @@ except Exception:
     DummyVecEnv, VecNormalize = None, None
 import sys
 from pathlib import Path
+
 def _ensure_module_importable(module_name: str, search_roots=None):
     try:
         __import__(module_name)
@@ -87,6 +83,30 @@ _ensure_module_importable("sb3_lattice_policy")
 # =========================================================
 def import_from_path(py_path: str, class_name: str):
     import importlib.util
+    from pathlib import Path
+    # Ensure the project root (where packages like `cpg` live) is on sys.path
+    try:
+        p = Path(py_path).resolve().parent
+        # walk upwards to find a folder that contains 'cpg' package
+        cur = p
+        added = False
+        while True:
+            if (cur / "cpg").exists() or (cur / "cpg.py").exists():
+                sp = str(cur)
+                if sp not in sys.path:
+                    sys.path.insert(0, sp)
+                added = True
+                break
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+        # Fallback: add the file's parent directory if nothing found
+        if not added:
+            fp = str(p)
+            if fp not in sys.path:
+                sys.path.insert(0, fp)
+    except Exception:
+        pass
     spec = importlib.util.spec_from_file_location("custom_env_module", py_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"无法加载模块: {py_path}")
@@ -373,9 +393,9 @@ def make_env(args):
 def main():
     parser = argparse.ArgumentParser()
     # --- 模型/环境默认路径（按你提供的） ---
-    parser.add_argument("--human_model", type=str, default="/home/lvchen/body_SB3/logs/eval/best_human_c4_model")
-    parser.add_argument("--exo_model",   type=str, default="/home/lvchen/body_SB3/logs/eval/best_exo_c4_model")
-    parser.add_argument("--model_xml",   type=str, default="/home/lvchen/miniconda3/envs/myosuite/lib/python3.9/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml")
+    parser.add_argument("--human_model", type=str, default="/home/lvchen/body_SB3/logs/eval/best_human_model")
+    parser.add_argument("--exo_model",   type=str, default="/home/lvchen/body_SB3/logs/eval/best_exo_model")
+    parser.add_argument("--model_xml",   type=str, default="/home/lvchen/body_SB3/myosuite/lib/python3.10/site-packages/myosuite/simhive/myo_sim/leg/myolegs.xml")
 
     # 环境参数
     parser.add_argument("--reset_type",  type=str, default="lyly")
@@ -392,7 +412,7 @@ def main():
 
     # 输出
     parser.add_argument("--out_dir", type=str, default="/home/lvchen/body_SB3/utils/exo_human")
-    parser.add_argument("--max_steps", type=int, default=2000)
+    parser.add_argument("--max_steps", type=int, default=1800)
     parser.add_argument("--deterministic", action="store_true", default=True)
 
     # 动作拼接规则
@@ -434,12 +454,6 @@ def main():
     # -------------------------
     human_policy = PPO.load(args.human_model, device="cpu")
     exo_policy   = PPO.load(args.exo_model,   device="cpu")
-
-    # 打印策略的动作空间维度
-    # print(f"[DEBUG] human_policy.action_space: {human_policy.action_space}")
-    # print(f"[DEBUG] exo_policy.action_space: {exo_policy.action_space}")
-    # if hasattr(env_raw, "action_space"):
-    #     print(f"[DEBUG] env.action_space: {env_raw.action_space}")
 
     # -------------------------
     # 3) rollout + 记录
@@ -705,8 +719,15 @@ def main():
     # -------------------------
     t_arr = np.array(t_list)
 
+    # [新增] 动态计算画布宽度：
+    # 假设每秒数据需要 1.5 inch 宽，最小宽度 12 inch
+    total_time = t_arr[-1] if len(t_arr) > 0 else 1.0
+    dynamic_width = max(12.0, total_time * 1.5)
+    print(f"[Plot] Total time: {total_time:.2f}s. Setting figure width to: {dynamic_width:.1f} inches")
+
     def _plot_two(yL, yR, title, ylab, out_png):
-        plt.figure()
+        # 使用 dynamic_width
+        plt.figure(figsize=(dynamic_width, 6))
         plt.plot(t_arr, yR, label="Right (rr)")
         plt.plot(t_arr, yL, label="Left  (lr)")
         plt.xlabel("Time [s]")
@@ -738,8 +759,8 @@ def main():
         print("[WARN] 没有在 info 中读到 CPG 目标角度（rr_q_des/lr_q_des 均为 NaN）。"
               "请检查环境 step() 是否把 self._debug_cache 写入 info。")
 
-    # 角度：实际 vs 目标
-    plt.figure(figsize=(10, 6))
+    # 角度：实际 vs 目标 (使用 dynamic_width)
+    plt.figure(figsize=(dynamic_width, 6))
     plt.plot(t_arr, np.asarray(logs["rr_pos"], dtype=np.float64), label="Right q")
     plt.plot(t_arr, rr_q_des_arr, "--", label="Right q_des (CPG)")
     plt.plot(t_arr, np.asarray(logs["lr_pos"], dtype=np.float64), label="Left q")
@@ -753,8 +774,8 @@ def main():
     plt.savefig(os.path.join(args.out_dir, "cpg_target.png"), dpi=200)
     plt.close()
 
-    # 角速度：实际 vs 目标（可选，额外输出）
-    plt.figure(figsize=(10, 6))
+    # 角速度：实际 vs 目标 (使用 dynamic_width)
+    plt.figure(figsize=(dynamic_width, 6))
     plt.plot(t_arr, np.asarray(logs["rr_vel"], dtype=np.float64), label="Right dq")
     plt.plot(t_arr, rr_dq_des_arr, "--", label="Right dq_des (CPG)")
     plt.plot(t_arr, np.asarray(logs["lr_vel"], dtype=np.float64), label="Left dq")
@@ -767,6 +788,7 @@ def main():
     plt.tight_layout()
     plt.savefig(os.path.join(args.out_dir, "cpg_target_vel.png"), dpi=200)
     plt.close()
+
     _plot_two(
         yL=np.array(logs["lr_vel"]), yR=np.array(logs["rr_vel"]),
         title="EXO Hip Joint Velocity vs Time",
@@ -790,8 +812,8 @@ def main():
         out_png=os.path.join(args.out_dir, "exo_power_timeseries.png"),
     )
 
-    # 累积正功/负功（负功取绝对值）
-    plt.figure()
+    # 累积正功/负功 (使用 dynamic_width)
+    plt.figure(figsize=(dynamic_width, 6))
     plt.plot(t_arr, np.array(logs["rr_work_pos_cum"]), label="Right +Work")
     plt.plot(t_arr, np.array(logs["rr_work_neg_cum"]), label="Right -Work(abs)")
     plt.plot(t_arr, np.array(logs["lr_work_pos_cum"]), label="Left  +Work")
@@ -805,7 +827,7 @@ def main():
     plt.savefig(os.path.join(args.out_dir, "exo_work_cumulative.png"), dpi=200)
     plt.close()
 
-    # 总正功/负功条形图（负功取绝对值）
+    # 总正功/负功条形图（不需要拉长，因为是 Summary）
     rr_wpos = float(np.array(logs["rr_work_pos_cum"])[-1]) if len(logs["rr_work_pos_cum"]) > 0 else 0.0
     rr_wneg = float(np.array(logs["rr_work_neg_cum"])[-1]) if len(logs["rr_work_neg_cum"]) > 0 else 0.0
     lr_wpos = float(np.array(logs["lr_work_pos_cum"])[-1]) if len(logs["lr_work_pos_cum"]) > 0 else 0.0
@@ -831,7 +853,7 @@ def main():
 
     # -------------------------
     # 5.2) CPG 参数（Omega/amp/offset）随时间变化
-    #      便于排查“为什么策略总往负 offset 偏”、以及频率/幅值是否乱跳
+    #      (使用 dynamic_width)
     # -------------------------
     cpg_Omega = np.asarray(logs.get("cpg_Omega_target", []), dtype=np.float64)
     cpg_amp_L = np.asarray(logs.get("cpg_amp_target_L", []), dtype=np.float64)
@@ -846,7 +868,8 @@ def main():
     # Omega (rad/s) -> f (Hz)
     cpg_f_hz = cpg_Omega / (2.0 * np.pi)
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    # 3行子图，高度设为10，宽度动态
+    fig, axes = plt.subplots(3, 1, figsize=(dynamic_width, 10), sharex=True)
     axes[0].plot(t_arr, cpg_f_hz, label="f_target (Hz)")
     axes[0].set_ylabel("Frequency [Hz]")
     axes[0].set_title("CPG Targets vs Time")

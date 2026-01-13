@@ -262,7 +262,7 @@ class HipAngleCPG:
         self.phase_bias_wn = 8.0
         self.phase_bias_zeta = 1.0
 
-        self.phase_bias = 0.425  # cycle 0.1525+0.25(rad)
+        self.phase_bias = 0.1525  # cycle 0.1525+0.25(rad)
         self.phase_bias_dx = 0.0       # 若用二阶跟踪
 
         # 相位耦合（左右锁相）
