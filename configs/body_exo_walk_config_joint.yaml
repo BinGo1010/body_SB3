@@ -14,7 +14,7 @@ env:
   human_deterministic: true # 预测动作时是否采用确定性模式
 
   # 方案 2：冻结 EXO
-  freeze_exo: true
+  freeze_exo: false
   exo_pretrained_path: "/home/lvchen/body_SB3/logs/joint_exo/best_model.zip"
   exo_policy_device: "cpu"
   exo_deterministic: true # 预测动作时是否采用确定性模式
@@ -84,7 +84,7 @@ reward_weights:
   act_mag: 0.6
 
   exo_track: 0.0
-  # exo_load: 0.1
+  exo_load: 0.1
   exo_smooth: 0.1
   exo_power: 0.4
   
@@ -107,6 +107,6 @@ eval:
 
 wandb:
   wandb_enabled: true
-  project: "myoLegWalk—NSF"
+  project: "myoLegWalk—test"
   # project: "myoLegWalk—test"         # 你在 W&B 上建的项目名 "myoLegWalk—N"
-  name: "walkenv_1_7-Jonit" # 本次实验名字，不写就用时间戳
+  name: "walkenv_1_11-Jonit" # 本次实验名字，不写就用时间戳

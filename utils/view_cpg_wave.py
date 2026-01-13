@@ -97,8 +97,8 @@ def build_gui():
     offR = tk.DoubleVar(value=0.0)   # rad
 
     # PD 参数（可选）
-    kp = tk.DoubleVar(value=80.0)
-    kd = tk.DoubleVar(value=5.0)
+    kp = tk.DoubleVar(value=20.0)
+    kd = tk.DoubleVar(value=2.0)
 
     paused = tk.BooleanVar(value=False)
 

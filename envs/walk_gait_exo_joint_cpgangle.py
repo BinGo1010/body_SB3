@@ -4,15 +4,6 @@ from myosuite.utils import gym
 import numpy as np
 from myosuite.envs.myo.base_v0 import BaseV0
 from myosuite.utils.quat_math import quat2mat
-import sys
-from pathlib import Path
-# When running this file as a script, Python sets sys.path[0] to the
-# script directory (envs/), so top-level packages (like `cpg`) in the
-# project root may be missing. Ensure project root is on sys.path.
-_proj_root = str(Path(__file__).resolve().parent.parent)
-if _proj_root not in sys.path:
-    sys.path.insert(0, _proj_root)
-
 from cpg.params_12_bias import CMUParams
 from cpg.params import PaperParams
 from cpg.model import HipAngleCPG
@@ -157,7 +148,6 @@ class WalkEnvV4Multi(BaseV0):
     DEFAULT_OBS_KEYS_EXO = [
         "exo_q_hist",
         "exo_dq_hist",
-        "exo_phase_est",
     ]
 
     # 奖励：沿用 V3 的默认设置（你原来那套 vel_reward + cyclic_hip + ref_rot + joint_angle_rew）
@@ -401,8 +391,8 @@ class WalkEnvV4Multi(BaseV0):
         self._finalize_observation_space()
 
         self._exo_tau_hist = deque(maxlen=3)   # 存 [tau_L, tau_R]
-        self.exo_sigma_as = float(kwargs.pop("exo_sigma_as", 10))     # σ_as，可放 YAML
-        self.exo_tau_smooth_scale = float(kwargs.pop("exo_tau_smooth_scale", 0.5))  # 归一化尺度100(Nm)
+        self.exo_sigma_as = float(kwargs.pop("exo_sigma_as", 0.2))     # σ_as，可放 YAML
+        self.exo_tau_smooth_scale = float(kwargs.pop("exo_tau_smooth_scale", 100.0))  # 归一化尺度100(Nm)
 
     # ========== 观测相关 ==========
 
@@ -481,8 +471,7 @@ class WalkEnvV4Multi(BaseV0):
 
         obs_dict["exo_q_hist"]  = exo_q_hist   # shape (8,)
         obs_dict["exo_dq_hist"] = exo_dq_hist  # shape (8,)
-        phase_est = self._get_state_based_phase()
-        obs_dict["exo_phase_est"] = phase_est
+
         return obs_dict
 
     def _get_human_obs_vec(self, obs_dict=None):
@@ -599,7 +588,7 @@ class WalkEnvV4Multi(BaseV0):
 
     def reset(self, **kwargs):
         self.steps = 0
-        self._exo_soft_t = 0.0  # seconds
+
         nkey = int(getattr(self.sim.model, "nkey", 0))
 
         if self.reset_type == 'random':
@@ -632,10 +621,12 @@ class WalkEnvV4Multi(BaseV0):
         # code that expects mapping obs[key] works correctly.
         self.exo_cpg.reset()
         # -------------- reset：初始化外骨骼 CPG 参数状态（用于Δ形式）--------------
-        self.exo_f_min, self.exo_f_max = 1.6, 1.8          # Hz
+        self.exo_f_min, self.exo_f_max = 1.2, 1.8          # Hz
         self.exo_amp_min, self.exo_amp_max = 0.8, 1.2      # rad
-        self.exo_off_min, self.exo_off_max = -0.05, 0.05     # rad
+        self.exo_off_min, self.exo_off_max = -0.1, 0.1     # rad
         self.exo_phi_min, self.exo_phi_max = -0.5, 0.5   # rad，先小范围
+
+        
 
         # bin初值：频率取中值，幅值取中值，偏置取 0（你也可改成中值）
         self._exo_f_hz = 0.5 * (self.exo_f_min + self.exo_f_max)
@@ -744,49 +735,6 @@ class WalkEnvV4Multi(BaseV0):
             self.sim.data.body_xpos[foot_id_l] - self.sim.data.body_xpos[pelvis],
             self.sim.data.body_xpos[foot_id_r] - self.sim.data.body_xpos[pelvis]
         ])
-    def _get_state_based_phase(self):
-            """
-            利用双腿髋关节差分计算鲁棒的相位变量 (0~1)。
-            抗躯干俯仰干扰，且轨迹更接近正圆。
-            """
-            # 1. 确保缓存与索引存在
-            self._ensure_exo_pd_cache()
-            
-            # 2. 读取数据
-            # 假设 exo_hip_qadr = [左髋索引, 右髋索引]
-            q_L  = self.sim.data.qpos[self.exo_hip_qadr[0]]
-            q_R  = self.sim.data.qpos[self.exo_hip_qadr[1]]
-            dq_L = self.sim.data.qvel[self.exo_hip_dadr[0]]
-            dq_R = self.sim.data.qvel[self.exo_hip_dadr[1]]
-
-            # 3. 计算差分 (左 - 右)
-            # 这消除了躯干整体倾斜的共模噪声
-            q_diff  = q_L - q_R
-            dq_diff = dq_L - dq_R
-
-            # 4. 相平面参数调节
-            # omega: 归一化比例，将角速度映射到与角度同量级
-            # 5.0 对应约 0.8Hz 的步频，适合中速/慢速行走
-            omega = 6.0  
-
-            # 5. 计算极角 (Phase Angle)
-            # 坐标系定义：
-            # x = q_diff (正值代表左腿在前，右腿在后)
-            # y = -dq_diff / omega 
-            # 使用 arctan2(y, x)
-            phi = np.arctan2(-dq_diff / omega, q_diff) # 结果范围 (-pi, pi]
-
-            # 6. 映射到 [0, 1)
-            # phi = 0 (即 q_diff最大，左腿最前) -> phase = 0.5 还是 0.0 取决于你的定义
-            # 通常我们希望 phase 随时间单调递增。
-            # 此处 (phi + pi) / 2pi 将范围映射为 0 -> 1
-            phase = (phi + np.pi) / (2.0 * np.pi)
-
-            # (可选) 相位偏移校准
-            # 如果你希望 phase=0 对应左腿着地瞬间，可以在这里加 offset
-            # phase = (phase + 0.25) % 1.0 
-
-            return np.array([phase], dtype=np.float32)
 
     # def _get_vel_reward(self):
     #     vel = self._get_com_velocity()
@@ -1069,23 +1017,22 @@ class WalkEnvV4Multi(BaseV0):
 
 # ==================== 外骨骼奖励相关 ======================
     def _get_exo_track_reward(self):
-        # if not hasattr(self, "_exo_dbg"):
-        #     return 0.0
-        # d = self._exo_dbg
-        # # 误差
-        # e_q_L  = d["q_des_L"]  - d["q_L"]
-        # e_q_R  = d["q_des_R"]  - d["q_R"]
-        # e_dq_L = d["dq_des_L"] - d["dq_L"]
-        # e_dq_R = d["dq_des_R"] - d["dq_R"]
+        if not hasattr(self, "_exo_dbg"):
+            return 0.0
+        d = self._exo_dbg
+        # 误差
+        e_q_L  = d["q_des_L"]  - d["q_L"]
+        e_q_R  = d["q_des_R"]  - d["q_R"]
+        e_dq_L = d["dq_des_L"] - d["dq_L"]
+        e_dq_R = d["dq_des_R"] - d["dq_R"]
 
-        # # 可调尺度（先给保守值）
-        # sigma_q  = 0.3   # rad
-        # # sigma_dq = 2.0   # rad/s
+        # 可调尺度（先给保守值）
+        sigma_q  = 0.3   # rad
+        sigma_dq = 2.0   # rad/s
 
-        # rL = np.exp(-(e_q_L**2)/(sigma_q**2)  - (e_dq_L**2)/(sigma_dq**2))
-        # rR = np.exp(-(e_q_R**2)/(sigma_q**2)  - (e_dq_R**2)/(sigma_dq**2))
-        # return float(0.5 * (rL + rR))
-        return float(0.5)
+        rL = np.exp(-(e_q_L**2)/(sigma_q**2)  - (e_dq_L**2)/(sigma_dq**2))
+        rR = np.exp(-(e_q_R**2)/(sigma_q**2)  - (e_dq_R**2)/(sigma_dq**2))
+        return float(0.5 * (rL + rR))
 
     def _get_exo_smooth_reward(self) -> float:
         """
@@ -1100,7 +1047,7 @@ class WalkEnvV4Multi(BaseV0):
         tau_t1 = np.asarray(hist[-2], dtype=np.float32).ravel()
         tau_t2 = np.asarray(hist[-3], dtype=np.float32).ravel()
 
-        tau_scale = float(getattr(self, "exo_tau_smooth_scale", 30.0))
+        tau_scale = float(getattr(self, "exo_tau_smooth_scale", 50.0))
         tau_scale = max(tau_scale, 1e-6)
 
         dd = (tau_t - 2.0 * tau_t1 + tau_t2) / tau_scale   # 归一化二阶差分
@@ -1316,6 +1263,7 @@ class WalkEnvV4Multi(BaseV0):
                 self._warn_eobs_dim_once = True
             obs_e = obs_e[:exp_dim] if obs_e.size > exp_dim else np.pad(obs_e, (0, exp_dim - obs_e.size))
         act, _ = self.exo_policy.predict(obs_e, deterministic=self.exo_deterministic)
+        act, _ = self.exo_policy.predict(obs_e, deterministic=self.exo_deterministic)
         act = np.asarray(act, dtype=np.float32).ravel()
 
         # 兼容旧 EXO policy：5维 -> 新环境6维（补一个相位bias=0）
@@ -1431,12 +1379,12 @@ class WalkEnvV4Multi(BaseV0):
 
         # ========== 2) [-1,1] → 物理区间（外骨骼 CPG 参数） ==========
         # bin边界（优先用 reset 初始化的；没有就回退）
-        f_min  = float(getattr(self, "exo_f_min", 1.6))
+        f_min  = float(getattr(self, "exo_f_min", 1.2))
         f_max  = float(getattr(self, "exo_f_max", 1.8))
-        amp_min = float(getattr(self, "exo_amp_min", 0.5))
-        amp_max = float(getattr(self, "exo_amp_max", 1.5))
-        off_min = float(getattr(self, "exo_off_min", -0.05))
-        off_max = float(getattr(self, "exo_off_max", 0.05))
+        amp_min = float(getattr(self, "exo_amp_min", 0.8))
+        amp_max = float(getattr(self, "exo_amp_max", 1.2))
+        off_min = float(getattr(self, "exo_off_min", -0.1))
+        off_max = float(getattr(self, "exo_off_max", 0.1))
         phi_min = float(getattr(self, "exo_phi_min", -0.5))
         phi_max = float(getattr(self, "exo_phi_max",  0.5))
 
@@ -1510,213 +1458,89 @@ class WalkEnvV4Multi(BaseV0):
         self._debug_cache["debug/exo_phi"] = float(phase_bias_target)
 
 
-        # # ========== 3) CPG 生成外骨骼髋角度参考（q_des, dq_des） ==========
-        # cpg_out = self.exo_cpg.step(
-        # Omega_target=Omega_target,
-        # amp_target=amp_target,
-        # offset_target=offset_target,
-        # phase_bias_target=phase_bias_target,
-        # )
-
-        # # CPG 输出：先当作“波形(相对量)”
-        # # --- CPG 输出：先当作波形(相对量) ---
-        # q_des_L_wave, q_des_R_wave = cpg_out["q_des"]
-        # dq_des_L, dq_des_R = cpg_out["dq_des"]
-
-        # # --- 读当前真实关节 ---
-        # q_L  = float(self.sim.data.qpos[self.exo_hip_qadr[0]])
-        # q_R  = float(self.sim.data.qpos[self.exo_hip_qadr[1]])
-        # dq_L = float(self.sim.data.qvel[self.exo_hip_dadr[0]])
-        # dq_R = float(self.sim.data.qvel[self.exo_hip_dadr[1]])
-
-        # # --- 更新运行中心角（LPF）---
-        # if not hasattr(self, "_exo_q_center") or self._exo_q_center is None:
-        #     self._exo_q_center = np.array([q_L, q_R], dtype=np.float32)
-
-        # if bool(getattr(self, "exo_use_center_lpf", True)):
-        #     beta = float(getattr(self, "exo_center_beta", 0.01))
-        #     cur = np.array([q_L, q_R], dtype=np.float32)
-        #     self._exo_q_center = (1.0 - beta) * self._exo_q_center + beta * cur
-
-        # # --- 叠加：绝对参考角 = 运行中心角 + 波形 ---
-        # q_des_L = float(self._exo_q_center[0] + float(q_des_L_wave))
-        # q_des_R = float(self._exo_q_center[1] + float(q_des_R_wave))
-        # dq_des_L = float(dq_des_L)
-        # dq_des_R = float(dq_des_R)
-
-        # # ========== 4) PD：角度轨迹 -> 扭矩（写到 exo 髋 actuator） ==========
-        # q_L = float(self.sim.data.qpos[self.exo_hip_qadr[0]])
-        # q_R = float(self.sim.data.qpos[self.exo_hip_qadr[1]])
-        # dq_L = float(self.sim.data.qvel[self.exo_hip_dadr[0]])
-        # dq_R = float(self.sim.data.qvel[self.exo_hip_dadr[1]])
-
-        # # cache for exo tracking reward (used by _get_exo_track_reward)
-        # self._exo_dbg = {
-        #     # 叠加后的“绝对参考角”（用于 exo_track 与 PD 对齐）
-        #     "q_des_L": float(q_des_L),
-        #     "q_des_R": float(q_des_R),
-        #     "dq_des_L": float(dq_des_L),
-        #     "dq_des_R": float(dq_des_R),
-
-        #     # 原始 CPG 波形（用于诊断）
-        #     "q_des_L_wave": float(q_des_L_wave),
-        #     "q_des_R_wave": float(q_des_R_wave),
-
-        #     # 实际状态
-        #     "q_L": float(q_L),
-        #     "q_R": float(q_R),
-        #     "dq_L": float(dq_L),
-        #     "dq_R": float(dq_R),
-        # }
-        # exo_kp = 20
-        # exo_kd = 2
-        # # exo_kp = 80
-        # # exo_kd = 8
-        # self.exo_kp = exo_kp
-        # self.exo_kd = exo_kd
-
-        # tau_L = self.exo_kp * (float(q_des_L) - q_L) + self.exo_kd * (float(dq_des_L) - dq_L)
-        # tau_R = self.exo_kp * (float(q_des_R) - q_R) + self.exo_kd * (float(dq_des_R) - dq_R)
-
-        # # --------- debug cache：记录 CPG 输出和当前状态 ---------
-        # self._debug_cache["debug/q_des_L"]  = float(q_des_L)
-        # self._debug_cache["debug/q_des_R"]  = float(q_des_R)
-        # self._debug_cache["debug/q_L"]      = float(q_L)
-        # self._debug_cache["debug/q_R"]      = float(q_R)
-        # self._debug_cache["debug/dq_des_L"] = float(dq_des_L)
-        # self._debug_cache["debug/dq_des_R"] = float(dq_des_R)
-        # self._debug_cache["debug/dq_L"]     = float(dq_L)
-        # self._debug_cache["debug/dq_R"]     = float(dq_R)
-        # self._debug_cache["debug/q_des_L_wave"] = float(q_des_L_wave)  # 叠加前（波形）
-        # self._debug_cache["debug/q_des_R_wave"] = float(q_des_R_wave)
-        # self._debug_cache["debug/q_center_L"] = float(self._exo_q_center[0])
-        # self._debug_cache["debug/q_center_R"] = float(self._exo_q_center[1])
-
-        # # # 扭矩限幅（优先用 XML actuator ctrlrange）
-        # if getattr(self, "exo_tau_range", None) is not None:
-        #     loL, hiL = float(self.exo_tau_range[0, 0]), float(self.exo_tau_range[0, 1])
-        #     loR, hiR = float(self.exo_tau_range[1, 0]), float(self.exo_tau_range[1, 1])
-        # else:
-        #     loL, hiL = -1000.0, 1000.0
-        #     loR, hiR = -1000.0, 1000.0
-        # tau_L = float(np.clip(tau_L, loL, hiL))
-        # tau_R = float(np.clip(tau_R, loR, hiR))
-        # # ========== Soft-start gate (delay + ramp) ==========
-        # dt = float(getattr(self, "dt", 0.0))
-        # if dt <= 0.0:
-        #     # mujoco timestep 兜底（更靠谱）
-        #     dt = float(self.sim.model.opt.timestep)
-        # self._exo_soft_t = float(getattr(self, "_exo_soft_t", 0.0) + dt)
-
-        # delay_s = float(getattr(self, "exo_softstart_delay", 0.5))   # 2.5s后开始
-        # ramp_s  = float(getattr(self, "exo_softstart_ramp", 0.5))    # 拉到1用时（可调）
-        # mode    = str(getattr(self, "exo_softstart_mode", "linear")) # "linear" 或 "exp"
-
-        # t = float(getattr(self, "_exo_soft_t", 0.0))
-
-        # if t <= delay_s:
-        #     g = 0.0
-        # else:
-        #     x = (t - delay_s) / max(ramp_s, 1e-6)  # 0→1
-        #     if mode == "linear":
-        #         g = float(np.clip(x, 0.0, 1.0))
-        #     elif mode == "exp":
-        #         # 指数渐入：x=0时0，x→∞时→1；在 x=1 时到约 1-exp(-k)
-        #         k = float(getattr(self, "exo_softstart_k", 4.0))
-        #         g = float(1.0 - np.exp(-k * max(x, 0.0)))
-        #         g = float(np.clip(g, 0.0, 1.0))
-        #     else:
-        #         g = 1.0  # 未知mode则直接开
-
-        # # 乘门控
-        # tau_L *= g
-        # tau_R *= g
-
-        # # 记录一下便于你debug/画图
-        # # self._debug_cache["debug/exo_soft_g"] = float(g)
-        # # self._debug_cache["debug/exo_soft_t"] = float(t)
-
-        # # ========== 5) 组装 actuator 控制向量 ==========
-        # ctrl = np.zeros(self.sim.model.nu, dtype=float)
-        # # 肌肉
-        # ctrl[self.muscle_act_ids] = np.asarray(muscle_cmd, dtype=float)
-        # # 外骨骼髋扭矩 actuator
-        # # if bool(getattr(self, "exo_tau_nonnegative", True)):  # 默认开启
-        # #     tau_L = float(max(0.0, tau_L))
-        # #     tau_R = float(max(0.0, tau_R))
-
-        # # self._debug_cache["debug/tau_L_after_nonneg"] = float(tau_L)
-        # # self._debug_cache["debug/tau_R_after_nonneg"] = float(tau_R)
-        # # 不输出负功：若 tau*qdot < 0 则置 0
-        # if tau_L * dq_L < 0: tau_L = 0.0
-        # if tau_R * dq_R < 0: tau_R = 0.0
-
-        # # 写入 ctrl
-        # ctrl[self.exo_hip_ids[0]] = tau_L #添加负号显著改善
-        # ctrl[self.exo_hip_ids[1]] = tau_R
-        # ========== 3) CPG 生成“角度波形”但直接当作扭矩波形使用 ==========
-        # ========== 3) CPG 生成外骨骼髋角度波形（q_des_wave, dq_des） ==========
+        # ========== 3) CPG 生成外骨骼髋角度参考（q_des, dq_des） ==========
         cpg_out = self.exo_cpg.step(
-            Omega_target=Omega_target,
-            amp_target=amp_target,
-            offset_target=offset_target,
-            phase_bias_target=phase_bias_target,
+        Omega_target=Omega_target,
+        amp_target=amp_target,
+        offset_target=offset_target,
+        phase_bias_target=phase_bias_target,
         )
 
-        q_des_L_wave, q_des_R_wave = cpg_out["q_des"]   # rad
-        dq_des_L, dq_des_R = cpg_out["dq_des"]          # rad/s（仅用于debug/可选）
+        # CPG 输出：先当作“波形(相对量)”
+        # --- CPG 输出：先当作波形(相对量) ---
+        q_des_L_wave, q_des_R_wave = cpg_out["q_des"]
+        dq_des_L, dq_des_R = cpg_out["dq_des"]
 
-        # --- 读当前真实关节（仅用于 debug / 负功门控 / power reward，不再用于 PD） ---
+        # --- 读当前真实关节 ---
         q_L  = float(self.sim.data.qpos[self.exo_hip_qadr[0]])
         q_R  = float(self.sim.data.qpos[self.exo_hip_qadr[1]])
         dq_L = float(self.sim.data.qvel[self.exo_hip_dadr[0]])
         dq_R = float(self.sim.data.qvel[self.exo_hip_dadr[1]])
 
-        # ========== 4) 直接把 HipAngleCPG 的角度波形映射为扭矩命令（跳过中心角与PD） ==========
-        # q_des_wave 单位 rad，需要映射到 Nm：tau = gain * q_wave + bias
-        tau_gain = float(getattr(self, "exo_tau_from_angle_gain", 20.0))   # Nm/rad，建议先 20~80 试
-        tau_bias = getattr(self, "exo_tau_from_angle_bias", None)          # [Nm, Nm] or None
-        if tau_bias is None:
-            tau_bias = np.zeros(2, dtype=np.float32)
-        tau_bias = np.asarray(tau_bias, dtype=np.float32).ravel()
-        if tau_bias.size == 1:
-            tau_bias = np.array([tau_bias[0], tau_bias[0]], dtype=np.float32)
+        # --- 更新运行中心角（LPF）---
+        if not hasattr(self, "_exo_q_center") or self._exo_q_center is None:
+            self._exo_q_center = np.array([q_L, q_R], dtype=np.float32)
 
-        tau_L = float(tau_gain * float(q_des_L_wave) + float(tau_bias[0]))
-        tau_R = float(tau_gain * float(q_des_R_wave) + float(tau_bias[1]))
+        if bool(getattr(self, "exo_use_center_lpf", True)):
+            beta = float(getattr(self, "exo_center_beta", 0.01))
+            cur = np.array([q_L, q_R], dtype=np.float32)
+            self._exo_q_center = (1.0 - beta) * self._exo_q_center + beta * cur
 
-        # cache：如果你后续还有 exo_track（角度跟踪版）会误用，这里建议改成“记录扭矩参考”
-        # 如不改 exo_track，请把 exo_track 权重设 0 或改成扭矩 track
+        # --- 叠加：绝对参考角 = 运行中心角 + 波形 ---
+        q_des_L = float(self._exo_q_center[0] + float(q_des_L_wave))
+        q_des_R = float(self._exo_q_center[1] + float(q_des_R_wave))
+        dq_des_L = float(dq_des_L)
+        dq_des_R = float(dq_des_R)
+
+        # ========== 4) PD：角度轨迹 -> 扭矩（写到 exo 髋 actuator） ==========
+        q_L = float(self.sim.data.qpos[self.exo_hip_qadr[0]])
+        q_R = float(self.sim.data.qpos[self.exo_hip_qadr[1]])
+        dq_L = float(self.sim.data.qvel[self.exo_hip_dadr[0]])
+        dq_R = float(self.sim.data.qvel[self.exo_hip_dadr[1]])
+
+        # cache for exo tracking reward (used by _get_exo_track_reward)
         self._exo_dbg = {
-            "tau_des_L": float(tau_L),
-            "tau_des_R": float(tau_R),
-            "q_des_L_wave": float(q_des_L_wave),
-            "q_des_R_wave": float(q_des_R_wave),
+            # 叠加后的“绝对参考角”（用于 exo_track 与 PD 对齐）
+            "q_des_L": float(q_des_L),
+            "q_des_R": float(q_des_R),
             "dq_des_L": float(dq_des_L),
             "dq_des_R": float(dq_des_R),
+
+            # 原始 CPG 波形（用于诊断）
+            "q_des_L_wave": float(q_des_L_wave),
+            "q_des_R_wave": float(q_des_R_wave),
+
+            # 实际状态
             "q_L": float(q_L),
             "q_R": float(q_R),
             "dq_L": float(dq_L),
             "dq_R": float(dq_R),
         }
+        # exo_kp = 20
+        # exo_kd = 2
+        exo_kp = 80
+        exo_kd = 8
+        self.exo_kp = exo_kp
+        self.exo_kd = exo_kd
 
-        # debug cache：保留你想画的量（中心角相关的就别再记录/或记录为NaN）
-        self._debug_cache["debug/q_des_L_wave"] = float(q_des_L_wave)
-        self._debug_cache["debug/q_des_R_wave"] = float(q_des_R_wave)
+        tau_L = self.exo_kp * (float(q_des_L) - q_L) + self.exo_kd * (float(dq_des_L) - dq_L)
+        tau_R = self.exo_kp * (float(q_des_R) - q_R) + self.exo_kd * (float(dq_des_R) - dq_R)
+
+        # --------- debug cache：记录 CPG 输出和当前状态 ---------
+        self._debug_cache["debug/q_des_L"]  = float(q_des_L)
+        self._debug_cache["debug/q_des_R"]  = float(q_des_R)
+        self._debug_cache["debug/q_L"]      = float(q_L)
+        self._debug_cache["debug/q_R"]      = float(q_R)
         self._debug_cache["debug/dq_des_L"] = float(dq_des_L)
         self._debug_cache["debug/dq_des_R"] = float(dq_des_R)
-        self._debug_cache["debug/q_L"] = float(q_L)
-        self._debug_cache["debug/q_R"] = float(q_R)
-        self._debug_cache["debug/dq_L"] = float(dq_L)
-        self._debug_cache["debug/dq_R"] = float(dq_R)
-        self._debug_cache["debug/exo_tau_gain"] = float(tau_gain)
-        self._debug_cache["debug/tau_L_cmd_pre_clip"] = float(tau_L)
-        self._debug_cache["debug/tau_R_cmd_pre_clip"] = float(tau_R)
+        self._debug_cache["debug/dq_L"]     = float(dq_L)
+        self._debug_cache["debug/dq_R"]     = float(dq_R)
+        self._debug_cache["debug/q_des_L_wave"] = float(q_des_L_wave)  # 叠加前（波形）
+        self._debug_cache["debug/q_des_R_wave"] = float(q_des_R_wave)
+        self._debug_cache["debug/q_center_L"] = float(self._exo_q_center[0])
+        self._debug_cache["debug/q_center_R"] = float(self._exo_q_center[1])
 
-        # （可选）如果你还想保留 q_des_L/q_des_R 字段避免别处KeyError，可以填波形或置None
-        # self._debug_cache["debug/q_des_L"] = float(q_des_L_wave)
-        # self._debug_cache["debug/q_des_R"] = float(q_des_R_wave)
-         # # 扭矩限幅（优先用 XML actuator ctrlrange）
+        # 扭矩限幅（优先用 XML actuator ctrlrange）
         if getattr(self, "exo_tau_range", None) is not None:
             loL, hiL = float(self.exo_tau_range[0, 0]), float(self.exo_tau_range[0, 1])
             loR, hiR = float(self.exo_tau_range[1, 0]), float(self.exo_tau_range[1, 1])
@@ -1725,58 +1549,13 @@ class WalkEnvV4Multi(BaseV0):
             loR, hiR = -1000.0, 1000.0
         tau_L = float(np.clip(tau_L, loL, hiL))
         tau_R = float(np.clip(tau_R, loR, hiR))
-        # ========== Soft-start gate (delay + ramp) ==========
-        dt = float(getattr(self, "dt", 0.0))
-        if dt <= 0.0:
-            # mujoco timestep 兜底（更靠谱）
-            dt = float(self.sim.model.opt.timestep)
-        self._exo_soft_t = float(getattr(self, "_exo_soft_t", 0.0) + dt)
-
-        delay_s = float(getattr(self, "exo_softstart_delay", 0.5))   # 2.5s后开始
-        ramp_s  = float(getattr(self, "exo_softstart_ramp", 0.5))    # 拉到1用时（可调）
-        mode    = str(getattr(self, "exo_softstart_mode", "linear")) # "linear" 或 "exp"
-
-        t = float(getattr(self, "_exo_soft_t", 0.0))
-
-        if t <= delay_s:
-            g = 0.0
-        else:
-            x = (t - delay_s) / max(ramp_s, 1e-6)  # 0→1
-            if mode == "linear":
-                g = float(np.clip(x, 0.0, 1.0))
-            elif mode == "exp":
-                # 指数渐入：x=0时0，x→∞时→1；在 x=1 时到约 1-exp(-k)
-                k = float(getattr(self, "exo_softstart_k", 4.0))
-                g = float(1.0 - np.exp(-k * max(x, 0.0)))
-                g = float(np.clip(g, 0.0, 1.0))
-            else:
-                g = 1.0  # 未知mode则直接开
-
-        # 乘门控
-        tau_L *= g
-        tau_R *= g
-
-        # 记录一下便于你debug/画图
-        # self._debug_cache["debug/exo_soft_g"] = float(g)
-        # self._debug_cache["debug/exo_soft_t"] = float(t)
 
         # ========== 5) 组装 actuator 控制向量 ==========
         ctrl = np.zeros(self.sim.model.nu, dtype=float)
         # 肌肉
         ctrl[self.muscle_act_ids] = np.asarray(muscle_cmd, dtype=float)
         # 外骨骼髋扭矩 actuator
-        # if bool(getattr(self, "exo_tau_nonnegative", True)):  # 默认开启
-        #     tau_L = float(max(0.0, tau_L))
-        #     tau_R = float(max(0.0, tau_R))
-
-        # self._debug_cache["debug/tau_L_after_nonneg"] = float(tau_L)
-        # self._debug_cache["debug/tau_R_after_nonneg"] = float(tau_R)
-        # 不输出负功：若 tau*qdot < 0 则置 0
-        if tau_L * dq_L < 0: tau_L = 0.0
-        if tau_R * dq_R < 0: tau_R = 0.0
-
-        # 写入 ctrl
-        ctrl[self.exo_hip_ids[0]] = tau_L #添加负号显著改善
+        ctrl[self.exo_hip_ids[0]] = tau_L
         ctrl[self.exo_hip_ids[1]] = tau_R
 
         # 二阶差分平滑奖励扭矩历史缓存

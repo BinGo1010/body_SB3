@@ -83,7 +83,7 @@ def main():
     parser.add_argument(
         "--vel",
         type=float,
-        default=1.6,
+        default=1.0,
         help="目标前向速度 v_target (m/s)，默认 1.2",
     )
     parser.add_argument(

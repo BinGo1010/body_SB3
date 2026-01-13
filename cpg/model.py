@@ -297,7 +297,7 @@ class HipAngleCPG:
         l = np.arange(1, S + 1, dtype=float)
         return float(np.sum((-l) * a * np.sin(l * phi) + (l) * b * np.cos(l * phi)))
 
-    def step(self, Omega_target, amp_target, offset_target, phase_bias_target):
+    def step(self, Omega_target, amp_target, offset_target, phase_bias_target=0.1525):
         # 1) 二阶跟踪：omega/amp/offset
         self.omega, self.omega_dx = self._track2(
             self.omega, self.omega_dx, float(Omega_target), self.omega_wn, self.omega_zeta

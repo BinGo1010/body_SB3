@@ -38,7 +38,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from envs.walk_gait_exo_joint import WalkEnvV4Multi
+from envs.walk_gait_exo_joint_tarque_setpoint import WalkEnvV4Multi
 
 
 # ---------------------------------------------------------------------------
